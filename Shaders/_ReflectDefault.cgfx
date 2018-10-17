@@ -1,0 +1,90 @@
+
+uniform samplerCUBE environmentMap;
+float fresnelBias;
+float fresnelScale;
+float fresnelPower;
+
+void reflectDefaultGlassV(float4 pos: POSITION,
+						  float4 normal: NORMAL,
+						  out float4 oPos: POSITION,
+						  out float3 oRef: TEXCOORD2)
+{
+	oPos = mul(glstate.matrix.mvp, pos);
+	float3 posW = mul(glstate.matrix.modelview[0], pos).xyz;
+	float3 N = mul(glstate.matrix.invtrans.modelview[0], normal).xyz;
+
+	N = normalize(N);
+	//float3 eyePosW = normalize(mul(glstate.matrix.inverse.modelview[0], float4(eyePos, 0))).xyz;
+	//float3 I = posW - eyePosW; 	
+	float3 I =  (posW - float3(glstate.matrix.modelview[0]._m30, 
+							   glstate.matrix.modelview[0]._m31,
+							   glstate.matrix.modelview[0]._m32));
+
+	oRef = mul((float3x3)glstate.matrix.inverse.modelview[0], reflect(I, N));
+}
+
+void reflectDefaultGlassF(float3 R: TEXCOORD2,
+                          out float4 oColor: COLOR)
+{	
+    oColor = texCUBE(environmentMap, R);
+}
+
+void lightDispersionV(float4 pos: POSITION,
+						  float4 normal: NORMAL,
+
+						  out float4 oPos: POSITION,
+						  out float3 oRef: TEXCOORD2,
+
+						  out float3 oRr: TEXCOORD3,
+						  out float3 oRg: TEXCOORD4,
+						  out float3 oRb: TEXCOORD5,
+						  
+						  out float oReflectionFactor: COLOR)
+{
+	oPos = mul(glstate.matrix.mvp, pos);
+	float3 posW = mul(glstate.matrix.modelview[0], pos).xyz;
+	float3 N = normal.xyz;
+
+	N = normalize(N);	
+	float3 I =  normalize(mul((float3x3)glstate.matrix.inverse.modelview[0],
+							  (posW - float3(glstate.matrix.modelview[0]._m30, 
+											 glstate.matrix.modelview[0]._m31,
+											 glstate.matrix.modelview[0]._m32))));
+
+	oRef = glstate.light[0].position.xyz - posW;
+
+	oRr = refract(I, N, 1.1f);
+	oRg = refract(I, N, 1.12f);
+	oRb = refract(I, N, 1.14f);
+
+	fresnelBias = 0.1f;
+	fresnelScale = 0.3f;
+	fresnelPower = 0.2f;
+
+	oReflectionFactor = fresnelBias + fresnelScale*pow(1 + dot(I, N), fresnelPower);
+}
+
+void lightDispersionF(float3 R: TEXCOORD2,
+					  float reflectionFactor: COLOR,
+
+						  float3 Rr: TEXCOORD3,
+						  float3 Rg: TEXCOORD4,
+						  float3 Rb: TEXCOORD5,
+
+                          out float4 oColor: COLOR)
+{	
+    float4 reflectedColor = float4(1,1,1,1)*texCUBEproj(environmentMap, float4(R, 1)).r;
+
+
+oColor = reflectedColor;
+}
+
+
+technique GlassReflect
+{
+    pass pass0
+    {
+        VertexProgram = compile arbvp1 lightDispersionV();
+        FragmentProgram = compile arbfp1 lightDispersionF();
+    }
+}

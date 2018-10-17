@@ -1,0 +1,86 @@
+void LightCalc(int light, float4 normal, float4 position, float4 view,
+
+			   uniform float constant,
+			   uniform float linear,
+			   uniform float quadratic,
+			   uniform float specComponent,
+
+			   out float diffuse, out float specular)
+{
+	// diffuse
+    float4 lightVec  = float4((glstate.light[light].position - position).xyz, 0);	
+    float dis = length(lightVec);
+	lightVec = normalize(lightVec);
+
+	// attenuation
+	float attenuation = 1/(constant + linear*dis + quadratic*dis*dis);
+
+    diffuse   = dot(normal, lightVec)*attenuation;
+
+	float4 halfVector = normalize(lightVec + view);	
+	
+	// specular
+	specular = 0;	
+	specular = (diffuse>0)?pow(max(dot(normal, halfVector), 0), specComponent)*attenuation:0;
+}
+
+void main(float2 uv0: TEXCOORD0,
+		  float4 position: TEXCOORD6,
+		  float4 normal: TEXCOORD7,	
+		  uniform float4x4 modelViewIT,	
+
+		  uniform float totalLights[],
+
+		  uniform float4 materialDiffuse,
+		  uniform float4 materialSpecular,
+		  uniform float4 ambient,	
+
+		  uniform sampler2D texture1: TEXUNIT0,
+		  uniform bool useTex1,
+
+		  uniform sampler1D diffuseSampler1D	: TEXUNIT7,
+		  uniform sampler1D specularSampler1D	: TEXUNIT8,
+		  uniform sampler1D edgeSampler1D		: TEXUNIT9,
+
+		  uniform float specularExponent,
+		  uniform float constant,
+		  uniform float linear,
+		  uniform float quadratic,	 
+
+		  out float4 color:COLOR)
+{
+	modelViewIT = glstate.matrix.invtrans.modelview[0];
+	
+	//normal
+	float4 norm = normal;
+
+    // transform the normal into eye space
+    norm = mul(modelViewIT, normal);
+    norm.xyz = normalize(norm.xyz);	
+
+	// diffuse & specular
+	float diffuse = 0;
+	float specular = 0;	
+
+	float tdiffuse = 0;
+	float tspecular = 0;	
+
+	float4 view = float4((-normalize(position.xyz), 0));
+
+	for(int i = 0; i<1 ;i++)
+	{
+		LightCalc(i, norm, position, view, constant, linear, quadratic, specularExponent, tdiffuse, tspecular);
+		diffuse += tdiffuse;
+		specular += tspecular;
+	}
+
+	specular = (diffuse>0)?specular:0;
+
+	float edge = dot(norm.xyz, -normalize(position.xyz));
+
+	/* For per pixel lighting */
+	//color = ambient + diffuse*materialDiffuse + specular*materialSpecular;
+
+	/* For toon shading */
+	color = tex1D(edgeSampler1D, edge)*(tex1D(diffuseSampler1D ,diffuse)*((useTex1==true)?tex2D(texture1, uv0)*materialDiffuse:materialDiffuse) + tex1D(specularSampler1D, specular)*materialSpecular + ambient);
+}

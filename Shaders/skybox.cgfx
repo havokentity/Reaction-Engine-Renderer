@@ -1,0 +1,34 @@
+//uniform float constDistance = 100;
+
+void skybox_vs(float4 position:POSITION,
+               float2 texCoord: TEXCOORD0,
+
+               out float oModelViewDistance: TEXCOORD6,
+               out float4 oPos: POSITION,
+               out float2 oTexCoord: TEXCOORD0)
+{
+    oTexCoord = texCoord;
+    oModelViewDistance = length(mul(glstate.matrix.modelview[0], position).xyz);
+    
+    oPos = mul(glstate.matrix.mvp, position);
+}
+
+void skybox_ps(sampler2D skyBox2DTexture: TEXUNIT0,
+               float2 texCoord: TEXCOORD0,
+               
+               float mvDistance: TEXCOORD6,
+
+               out float4 oColor: COLOR)
+{    
+    oColor = float4(tex2D(skyBox2DTexture, texCoord).xyz, mvDistance);
+}
+
+technique SkyBoxDepthShader
+{
+    pass Pass0
+    {
+        CullFaceEnable = true;
+        VertexProgram = compile arbvp1 skybox_vs();
+        FragmentProgram = compile arbfp1 skybox_ps();
+    }
+}

@@ -1,0 +1,19 @@
+void main(float4 position:POSITION, 
+		  float4 normal: NORMAL,
+		  float2 uv0: TEXCOORD0,
+		  uniform float4x4 modelView,
+
+	      out float2 oUv0:TEXCOORD0,
+		  out float4 oPos:POSITION,
+		  out float4 oUTPos:TEXCOORD6,
+		  out float4 oUTNorm:TEXCOORD7)
+{
+	oPos = mul(glstate.matrix.mvp, position);
+
+	modelView = glstate.matrix.modelview[0];
+	float4 mvPos = mul(modelView, position);
+
+	oUv0 = uv0;
+	oUTPos = mvPos;
+	oUTNorm = normal;	
+}

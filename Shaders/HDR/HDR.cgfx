@@ -1,0 +1,441 @@
+/*	
+============================================================================================
+	Copyright  DifferentialArts 2007-08
+
+	$Author: Rajesh Peter Douglas D'Monte	
+
+	HDR, Tonemapping etc
+============================================================================================
+*/
+
+uniform float       blurAmount;
+uniform float       lensExposure;
+uniform float       gamma;
+
+uniform float       radialBlurAmount;
+uniform float		radialScaleDown;
+uniform float2		radialCardinalOrigin;
+
+uniform float3		focalParams;	//focalParams.x => minDis, focalParams.y => maxDis,
+									//focalParams.z => 1/minDis
+uniform float2		calFocalParams; //calFocalParams.x => focalFallOff (default: 600)
+									//calFocalParams.y => 1/focalFallOff
+
+/*
+uniform float3 fk3f[32] = { {0.1f, 0.2f, 0.52f},
+						    {0.15f, 0.5f, 0.42f},
+							{0.2f, 0.2f, 0.42f},
+							{0.31f, 0.2f, 0.83f},
+						    {0.4f, 0.2f, 0.23f},
+							{0.61f, 0.6f, 0.82f},
+							{0.41f, 0.6f, 0.112f},
+						    {0.23f, 0.2f, 0.42f},
+							{0.11f, 0.45f, 0.12f},
+							{0.12f, 0.4f, 0.32f},
+						    {0.1f, 0.6f, 0.52f},
+							{0.41f, 0.67f, 0.62f},
+							{0.31f, 0.23f, 0.82f},
+						    {0.1f, 0.56f, 0.72f},
+							{0.31f, 0.11f, 0.62f},
+							{0.21f, 0.87f, 0.22f},
+						    {0.11f, 0.77f, 0.52f},
+							{0.71f, 0.23f, 0.42f},
+							{0.81f, 0.29f, 0.32f},
+						    {0.61f, 0.2f, 0.82f},
+							{0.51f, 0.23f, 0.72f},
+							{0.41f, 0.34f, 0.62f},
+						    {0.31f, 0.2f, 0.52f},
+							{0.41f, 0.22f, 0.42f},
+							{0.11f, 0.24f, 0.32f},
+						    {0.11f, 0.5f, 0.2f},
+							{0.31f, 0.27f, 0.12f},
+							{0.71f, 0.7f, 0.22f},
+						    {0.51f, 0.2f, 0.32f},
+							{0.41f, 0.5f, 0.42f},
+							{0.11f, 0.2f, 0.52f},
+							{0.21f, 0.11f, 0.62f} };
+*/
+
+ uniform float3 fk3f[32] = { 
+							 { 0.821f, 0.133f, 0.554f },
+							 { 0.826f, -0.55f, -0.08f },
+							 { 0.035f, 0.923f, -0.38f },
+							 { -0.07f, 0.811f, -0.57f },
+							 { 0.110f, -0.92f, 0.354f },
+							 { 0.073f, 0.986f, -0.14f },
+							 { -0.95f, 0.046f, -0.28f },
+							 { 0.579f, -0.71f, 0.393f },
+							 { 0.698f, -0.62f, -0.34f },
+							 { -0.58f, -0.45f, 0.671f },
+							 { 0.069f, -0.94f, -0.30f },
+							 { 0f, 0.791f, 0.610f },
+							 { 0.773f, 0.514f, -0.36f },
+							 { 0.915f, 0.389f, 0.097f },
+							 { 0.830f, -0.54f, -0.10f },
+							 { -0.57f, -0.07f, -0.81f },
+							 { 0.386f, 0.150f, -0.90f },
+							 { 0.818f, -0.57f, -0.00f },
+							 { 0.574f, 0.670f, 0.469f },
+							 { -0.67f, 0.731f, 0.082f },
+							 { 0.293f, 0.933f, -0.20f },
+							 { -0.61f, 0.491f, -0.61f },
+							 { -0.79f, -0.33f, 0.503f },
+							 { 0.160f, 0.733f, 0.660f },
+							 { 0.492f, 0.028f, -0.87f },
+							 { 0.642f, 0.514f, -0.56f },
+							 { 0.383f, 0.257f, -0.88f },
+							 { 0.100f, 0.969f, -0.22f },
+							 { 0.972f, -0.20f, -0.11f },
+							 { 0.954f, 0.070f, -0.29f },
+							 { 0.182f, -0.96f, 0.172f },
+							 { -0.78f, -0.59f, 0.148f }
+							 }; 
+
+
+//vignette darkens the outter edges gradually
+float vignette(float2 pos, float inner, float outer)
+{
+  float r = length(pos);
+  r = smoothstep(outer, inner, r);
+  return r;
+}
+
+// radial blur
+float4 radialBlur(sampler2D tex,
+				  float2 texcoord,
+                  float scaleMul, float2 cardinalOrigin)
+{
+	float4 c = 0;
+    float scale = 1.0f;
+	/* samples = 25 */
+    for(int i=0; i<15 /* samples */; i++) {
+        float2 uv = ((texcoord-cardinalOrigin)*scale)+cardinalOrigin;
+        float4 s = tex2D(tex, uv);
+        c += s;
+        scale *= scaleMul;
+    }
+    c *= 0.06666f; /* 1/samples */
+    return c;
+}
+
+void default_vs(float4 pos: POSITION,
+				float2 tc: TEXCOORD0,
+				out float4 o_pos: POSITION,
+				out float2 o_tc: TEXCOORD0)
+{
+	//pos.x = (1024 - pos.x)/1024.0f;
+	o_pos = mul(glstate.matrix.mvp, pos);
+	o_tc = tc;
+}
+
+void photographicTonemap_ps(float2 texcoord : TEXCOORD0,
+							sampler2D   sceneSampler    : TEXUNIT0,
+							sampler2D   blurSampler     : TEXUNIT1,
+							sampler2D   secondRT     : TEXUNIT2,
+
+							out float4	outPixel		: COLOR)
+{
+    // Original image and blurred image are interpolated
+    float4 scene = tex2D(sceneSampler, texcoord);
+    float4 blurred = tex2D(blurSampler, texcoord);	
+	float extraTextureData = tex2D(secondRT, texcoord).x;	
+
+    //outPixel = lerp(scene, blurred, (scene.w > 100) ? 1: blurAmount);
+	//float perc = (scene.w > 1000)?1:(((scene.w > 100) ? blurAmount + lerp(0, 1, (scene.w - 100)*0.001111f): ((scene.w < 30)?(lerp(1, 0, scene.w*0.033f) + blurAmount):blurAmount)));
+	//perc = (perc > 1)?1:perc;
+
+	/*
+	float minDis = tex2D(sceneSampler, float2(0.5f, 0.5f)).w;
+	float maxDis = minDis + 600;
+
+	float perc = (scene.w > 700)?1:((scene.w > 100)?lerp(blurAmount, 1, (scene.w - 100)*0.001666f):((scene.w < 50)?lerp(1, blurAmount, scene.w*0.02f):blurAmount));
+	outPixel = lerp(scene, blurred, perc);
+
+	float perc = (scene.w > maxDis)?1:((scene.w > minDis)?lerp(blurAmount, 1, (scene.w - minDis)*0.001666f):((scene.w < (minDis ))?lerp(1, blurAmount, scene.w*(1/(minDis ))):blurAmount));
+	outPixel = lerp(scene, blurred, perc);
+	*/
+
+	/* THIS IS FOR THE DEPTH OF FIELD */
+    /*
+	float finalBlurFraction = (scene.w > focalParams.y)?
+							  1:((scene.w > focalParams.x)?
+							  lerp(blurAmount, 1, (scene.w - focalParams.x)*calFocalParams.y):
+							  ((scene.w < (focalParams.x))?
+							  lerp(1, blurAmount, scene.w*focalParams.z):
+							  blurAmount));*/
+    float finalBlurFraction = (extraTextureData > focalParams.y)?
+							  lerp(blurAmount, 1, min(((extraTextureData - focalParams.y)*calFocalParams.y), 1)):
+							  ((extraTextureData > focalParams.x)?blurAmount:
+							  ((extraTextureData < (focalParams.x))?
+							  lerp(1, blurAmount, extraTextureData*focalParams.z):
+							  blurAmount));
+	
+
+	outPixel.rgb = lerp(scene,  blurred, finalBlurFraction).rgb;
+
+    // exposure
+    outPixel.rgb *= lensExposure; //wwwww
+    
+    // vignette effect
+    //outPixel *= vignette(texcoord*2-1, 1.0f, 2.0f);
+
+    // gamma correction
+    outPixel.rgb = pow(outPixel.rgb, gamma);	//wwwww
+
+	//outPixel.rgb = 10/extraTextureData;
+
+	//outPixel = pow(lerp(tex2D(blurSampler, texcoord),tex2D(sceneSampler, texcoord), 0.5f), gamma);
+}
+
+
+void photographicTonemapSSAO_ps(float2 texcoord : TEXCOORD0,
+							sampler2D   sceneSampler    : TEXUNIT0,
+							sampler2D   blurSampler     : TEXUNIT1,
+							sampler2D   normalSampler     : TEXUNIT2,            
+							sampler2D  noiseSampler     : TEXUNIT3, 
+
+							out float4	outPixel		: COLOR)
+{
+    // Original image and blurred image are interpolated
+    float4 scene = tex2D(sceneSampler, texcoord);
+    float4 blurred = tex2D(blurSampler, texcoord);	
+
+    //outPixel = lerp(scene, blurred, (scene.w > 100) ? 1: blurAmount);
+	//float perc = (scene.w > 1000)?1:(((scene.w > 100) ? blurAmount + lerp(0, 1, (scene.w - 100)*0.001111f): ((scene.w < 30)?(lerp(1, 0, scene.w*0.033f) + blurAmount):blurAmount)));
+	//perc = (perc > 1)?1:perc;
+
+	/*
+	float minDis = tex2D(sceneSampler, float2(0.5f, 0.5f)).w;
+	float maxDis = minDis + 600;
+
+	float perc = (scene.w > 700)?1:((scene.w > 100)?lerp(blurAmount, 1, (scene.w - 100)*0.001666f):((scene.w < 50)?lerp(1, blurAmount, scene.w*0.02f):blurAmount));
+	outPixel = lerp(scene, blurred, perc);
+
+	float perc = (scene.w > maxDis)?1:((scene.w > minDis)?lerp(blurAmount, 1, (scene.w - minDis)*0.001666f):((scene.w < (minDis ))?lerp(1, blurAmount, scene.w*(1/(minDis ))):blurAmount));
+	outPixel = lerp(scene, blurred, perc);
+	*/
+
+	/* THIS IS FOR THE DEPTH OF FIELD */
+    /*
+	float finalBlurFraction = (scene.w > focalParams.y)?
+							  1:((scene.w > focalParams.x)?
+							  lerp(blurAmount, 1, (scene.w - focalParams.x)*calFocalParams.y):
+							  ((scene.w < (focalParams.x))?
+							  lerp(1, blurAmount, scene.w*focalParams.z):
+							  blurAmount));*/
+    float finalBlurFraction = (scene.w > focalParams.y)?
+							  lerp(blurAmount, 1, min(((scene.w - focalParams.y)*calFocalParams.y), 1)):
+							  ((scene.w > focalParams.x)?blurAmount:
+							  ((scene.w < (focalParams.x))?
+							  lerp(1, blurAmount, scene.w*focalParams.z):
+							  blurAmount));
+	
+
+	//Dynamic AO... HELL YEAH!
+	//AmbientOcclusion(x,y) = 255 + GaussianAverage(x,y,sigma) - PixelValue(x,y)	
+	//ao(x,y) = 1.0f + depth(x,y) - gaussian_avg(x, y, sigma)
+	
+	/*
+    
+	float bl = 0.0f, temp = 0.0f;	
+	float2 offset = float2(0, -1.5f);
+
+	//float dir = bl
+
+	for(int  i = 0; i < 8; i++)
+	{
+		float2 tc = float2(sin(offset.x), cos(offset.y));
+		//float ns = length(tex2D(noiseSampler, texcoord + tc/1024.0f).xyz);
+		//float4 tmp = tex2D(blurSampler, texcoord + 2 * (ns*tc)/1024.0f);	
+		float4 tmp = tex2D(blurSampler, texcoord + 1/(256/(1/scene.w) ));			
+
+		
+		//ao = 1 + clamp((tmp.w - scene.w) * 0.1f, -2, 2);
+		float ot = (tmp.w - scene.w);
+		bl += 1 + 1 * clamp( ot * (100/(10 + scene.w*scene.w)), -1, 0.0);
+		//bl += 1 + (tmp.w - scene.w) * (100/(10 + scene.w*scene.w));
+
+		//float ot =(tmp.w - scene.w);
+
+		//ot = ot < -0.5f? 0 : ot;
+		//ot = ot > 0 ? 0 : ot;
+
+		//float t = ot > 0 ? 0 : ot;		
+		//temp = 1 + ot;
+		//bl += temp;
+		// occlusion = 1/( 1 + 2500*max{dist,0)^2 )
+		//bl += 10/(1 + 2500* pow(max(ot, 0), 2) );
+
+		//bl +=  1.0f + clamp((scene.w/10000 - tmp.w/10000) * 1000, -1.0f, 0.0f);
+
+		//ao = (abs(ddx(ao)) +  abs(ddy(ao)) > 2) ? ao * 0.5f: ao;
+		//ao = ns;
+
+		//float zd =  tmp.w - scene.w;
+       // ao += 1 - 1.0/(1.0+zd*zd);
+
+		offset += float2(0.92f, 0.92f);
+	}*/
+
+	//bl /= 8;
+
+	//outPixel.rgb  = ao;
+	
+	
+    
+	//uniform vec4 fres;
+	//uniform sampler2D tex0;
+	//uniform sampler2D tex1;	
+				 
+							  
+	float4 zbu = scene;
+	float3 dir = -float3((tex2D(normalSampler, texcoord).xyz - 0.5f) * 2.0f);
+
+	dir = normalize(float3(dir.xyz));
+
+	float3 ep = (zbu.w ) * dir/dir.z;
+
+	float3 pl = tex2D( noiseSampler, texcoord*zbu.w+ dir.xyz ).xyz;
+	pl = (pl*2.0 - float3(1.0));
+
+	//float4 H = float4(texcoord.x * 2 - 1, (1 - texcoord.y) * 2 - 1, zOverW, 1);
+	
+	
+	float bl = 0.0;
+	float rad = 2;
+
+	for( int i=0; i<8; i++ )
+	{
+		
+		//float3 se = ep - rad * fk3f[i].xyz;//reflect(fk3f[i].xyz,pl.xyz);		
+		float3 se = ep - rad * reflect(fk3f[i].xyz,pl.xyz*0.5f);
+
+		//float3 temp = mul(glstate.matrix.projection, float4(se.xyz, 1)).xyz;
+		
+		float2 temp = (se.xy/se.z)*float2(0.78,1.0);
+
+		float2 sn = -temp.xy * 0.5f + float2(0.5f, 0.5f);
+		//sn * 0.5f + float2(0.5f, 0.5f)
+		//float2 ss = (se.xy/se.z) * float2(1.0, -1.0);
+		//float2 sn = ss * 0.5f + float2(0.5f, 0.5f);
+		float4 sz = tex2D(sceneSampler, sn);
+
+		//float zd = sz.w;//max( sz.w, 0.0 );
+		//bl += 100/(zd);//1.0/(1.0+zd*zd); 
+
+		float t = (se.z - sz.w);
+		//float edgeSample = (se.z - sz.w);
+		//float zd = 50.0*max( t > 1 ? 0: t  , 0.0 );
+		//float zd = (edgeSample > 0) ? 0 : max( t , 0.0 );
+		float zd = 50* max( t , 0.0 );
+		float attenuation = zd * zd;
+		//attenuation = (attenuation > 5) ? 5: attenuation;
+        bl += 1/(1 + attenuation);
+	}
+	
+	/*
+	float bl = 0.0;
+	float rad = 0.5f;
+
+	for( int i=0; i<32; i++ )
+	{		
+		float3 se = ep - fk3f[i].xyz;//reflect(fk3f[i].xyz,pl.xyz);
+
+		//float3 temp = mul(glstate.matrix.projection, float4(se.xyz, 1)).xyz;
+		
+		float2 temp = (se.xy/se.z)*float2(0.78,1.0);
+
+		float2 sn = -temp.xy * 0.5f + float2(0.5f, 0.5f);
+		//sn * 0.5f + float2(0.5f, 0.5f)
+		//float2 ss = (se.xy/se.z) * float2(1.0, -1.0);
+		//float2 sn = ss * 0.5f + float2(0.5f, 0.5f);
+		float4 sz = tex2D(blurSampler, sn);
+
+		//float zd = sz.w;//max( sz.w, 0.0 );
+		//bl += 100/(zd);//1.0/(1.0+zd*zd); 
+
+		float t = (se.z - sz.w * dir.z);
+		//float edgeSample = (se.z - sz.w);
+		//float zd = 50.0*max( t > 1 ? 0: t  , 0.0 );
+		//float zd = (edgeSample > 0) ? 0 : max( t , 0.0 );
+		float zd =  50 * max( t > 1 ? 0 : t , 0.0 );
+		float attenuation = zd * zd;
+        bl += 1/(1 + attenuation);
+		
+
+		//bl += 100/(se.z - sz.w);
+	}*/
+
+	//outPixel.rgb = 100/(1 + zbu.w);
+	//outPixel.rgb = 100/(1 + ep.z);
+	//outPixel.rgb = bl.xxx/32;
+	//outPixel.rgb = 100/tex2D(sceneSampler, texcoord).w;
+	//tex2D(normalSampler, texcoord).xyz;
+	//outPixel.rgb = tex2D(normalSampler, texcoord).xyz;
+
+	//outPixel.rgb = bl.xxx/8;
+	outPixel.rgb = lerp(scene * bl.xxx/8,  blurred, finalBlurFraction).rgb;// * saturate(ao);
+	//outPixel.rgb = lerp(scene,  blurred, finalBlurFraction).rgb;
+	//outPixel.rgb = ao;//float3(50/scene.w, 50/at, 0 );//float3(ao.xx, at);//100/scene.w;//(ao);
+
+    // exposure
+    //outPixel *= lensExposure; //wwwww
+    
+    // vignette effect
+    //outPixel *= vignette(texcoord*2-1, 1.0f, 2.0f);
+
+    // gamma correction
+    //outPixel.rgb = pow(outPixel.rgb, gamma);	//wwwww
+
+	//outPixel = pow(lerp(tex2D(blurSampler, texcoord),tex2D(sceneSampler, texcoord), 0.5f), gamma);
+}
+
+void photographicTonemapRadial_ps(float2 texcoord : TEXCOORD0,
+								  sampler2D   sceneSampler    : TEXUNIT0,
+								  sampler2D   blurSampler     : TEXUNIT1,
+
+								  out float4 outPixel		  : COLOR)
+{
+    // Original image and blurred image are interpolated
+    float4 scene = tex2D(sceneSampler, texcoord);
+    float4 blurred = tex2D(blurSampler, texcoord);	
+
+	/* THIS IS FOR THE DEPTH OF FIELD */
+	float finalBlurFraction = (scene.w > focalParams.y)?
+							  lerp(blurAmount, 1, min(((scene.w - focalParams.y)*calFocalParams.y), 1)):
+							  ((scene.w > focalParams.x)?0:
+							  ((scene.w < (focalParams.x))?
+							  lerp(1, blurAmount, scene.w*focalParams.z):
+							  blurAmount));
+
+
+	outPixel = lerp(scene, blurred, finalBlurFraction);
+
+   //outPixel += radialBlur(blurSampler, texcoord, radialScaleDown)*radialBlurAmount;
+	outPixel += radialBlur(blurSampler, texcoord, radialScaleDown, radialCardinalOrigin)*radialBlurAmount;
+
+    // exposure
+    outPixel *= lensExposure;
+    
+    // vignette effect
+    //outPixel *= vignette(texcoord*2-1, 1.0f, 2.0f);
+
+    // gamma correction
+    outPixel.rgb = pow(outPixel.rgb, gamma);
+}
+
+
+technique HDR
+{
+	pass PhotographicToneMapping
+	{
+		VertexProgram = compile vp40 default_vs();
+		FragmentProgram = compile fp40 photographicTonemap_ps();
+	}
+
+	pass PhotographicToneMappingRadial
+	{
+		VertexProgram = compile vp40 default_vs();
+		FragmentProgram = compile fp40 photographicTonemapRadial_ps();
+	}
+}

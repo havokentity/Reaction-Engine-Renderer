@@ -1,0 +1,33 @@
+/*	
+	Per pixel lighting effect
+*/
+
+
+void Depth_vertex(float4 position:POSITION,
+                  out float4 posW: TEXCOORD3,
+
+                  out float4 oPos:POSITION)
+{
+    posW = mul(glstate.matrix.modelview[0], position);    
+    oPos = mul(glstate.matrix.mvp, position);
+}
+
+
+void Depth_fragment(float4 posW: TEXCOORD3,
+
+                    out float4 color:COLOR)
+{
+	color.w = sqrt(dot(posW.xyz, posW.xyz));   
+	//color.w = length(posW);   
+}
+
+technique PerPixelLighting
+{
+    pass Pass0
+    {        
+        CullFaceEnable = false;
+        //CullFace = Back;
+        VertexProgram = compile vp40 Depth_vertex();
+        FragmentProgram = compile fp40 Depth_fragment();
+    }
+}

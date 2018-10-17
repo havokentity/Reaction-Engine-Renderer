@@ -1,0 +1,33 @@
+uniform float time;
+
+void verts(float4 position:POSITION,
+           float2 texCoord: TEXCOORD0,            
+           
+           out float2 oTexCoord: TEXCOORD0,
+           out float4 oPos: POSITION)
+{
+    oTexCoord = texCoord;
+    oPos = mul(glstate.matrix.mvp, position);    
+    oPos.z += sin(time * 0.1f * position.y) * 10;
+    oPos.y += sin(time * 0.1f * position.y);
+ 
+}
+
+void frags(sampler2D myTexture: TEXUNIT0,
+           float2 texCoord: TEXCOORD0,            
+
+           out float4 oColor: COLOR)
+{
+    oColor = float4(tex2D(myTexture, texCoord).xyz, 1) * float4(texCoord, sin(time), 20);
+}
+
+technique Prashanth
+{
+	pass fagPass
+	{
+		BlendEnable = true;
+		//CullFaceEnable = true;
+		VertexProgram = compile arbvp1 verts();
+		FragmentProgram = compile arbfp1 frags();
+	}
+}

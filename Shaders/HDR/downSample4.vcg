@@ -1,0 +1,23 @@
+/*
+	Copyright © Differential Arts 2007-08
+
+	Author: Rajesh Peter Douglas D'Monte	
+	Description: SHADER
+
+	Downsample Vertex Program
+*/
+
+void main(float4 position : POSITION,
+	    float2 texcoord : TEXCOORD0,
+	    uniform float2 texelScaleSize,
+
+          out float2 oTexcoord[4] : TEXCOORD0,
+          out float4 oPos : POSITION)
+{
+    oTexcoord[0] = texcoord;
+    oTexcoord[1] = texcoord + float2(texelScaleSize.x, 0);
+    oTexcoord[2] = texcoord + float2(texelScaleSize.x, texelScaleSize.y);
+    oTexcoord[3] = texcoord + float2(0, texelScaleSize.y);
+    oPos = mul(glstate.matrix.mvp, position);
+	//oPos = position;
+}

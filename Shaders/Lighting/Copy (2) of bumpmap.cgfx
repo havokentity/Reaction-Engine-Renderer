@@ -1,0 +1,111 @@
+/*	
+	Copyright  Surreal.4 Interactive 2007-08
+
+	$Author: Rajesh Peter Douglas D'Monte	
+
+	Bumpmap effect
+*/
+#define LIGHTS 1
+
+uniform samplerCUBE normalizationMap;
+
+/*
+float3 lightPos[LIGHTS];
+float3 lightDir[LIGHTS];
+float3 halfVecs[LIGHTS];
+float3 attenuation[LIGHTS];
+*/
+
+struct SDATA
+{
+    float4 oPos: POSITION;
+    float2 oTexcoord:TEXCOORD0;
+    
+    float3 lightPos[LIGHTS]:TEXCOORD4;
+    float3 lightDir[LIGHTS]:TEXCOORD5;
+    float3 halfVecs[LIGHTS]:TEXCOORD6;
+};
+         
+float attenuate(float dis, int light)
+{
+	//float attenuation = 1/(0.001f + 0.003f*dis + 0.0004*dis*dis);
+	float attenuation = 1/(glstate.light[light].attenuation.x + glstate.light[light].attenuation.y*dis + glstate.light[light].attenuation.z*dis*dis);
+	return attenuation;
+}
+
+float3 expand(float3 v)
+{
+    return (v - 0.5f)*2;
+}
+
+SDATA BumpVertex(float4 position: POSITION,
+                float2 texcoord: TEXCOORD0 )
+{
+    SDATA outData;
+    
+    outData.oTexcoord = texcoord;
+    outData.oPos = mul(glstate.matrix.mvp, position);
+    
+    for(int i = 0;i < LIGHTS; i++)
+    {    
+        outData.lightPos[i] = mul(glstate.matrix.inverse.modelview[0] ,glstate.light[i].position).xyz;       
+        
+        outData.lightDir[i] = outData.lightPos[i] - position.xyz;   
+        outData.halfVecs[i] =  normalize(-position.xyz);
+    }
+    
+    return outData;
+}
+
+void BumpFragment(SDATA inData, 
+                  float2 texcoord: TEXCOORD0,
+
+                  sampler2D surfaceTexture: TEXUNIT0,
+                  sampler2D normalTexture: TEXUNIT1,
+
+                  out float4 color: COLOR)
+{
+    //lightDir = texCUBE(normalizationMap, lightDir).xyz;
+    //lightDir = expand(lightDir);
+    color = float4(0, 0, 0, 1);
+    
+    float3 normal =tex2D(normalTexture, texcoord).xyz;
+    //normal = texCUBE(normalizationMap, normal).xyz;
+    normal = expand(normal);  
+    
+    float dis, attenuation;
+    
+    float diffuse;
+    float specular;
+    
+    for(int i = 0;i < LIGHTS; i++)
+    {
+    
+        dis = length(inData.lightDir[i]);
+        
+        //inData.halfVecs[i] = texCUBE(normalizationMap, inData.halfVecs[i]).xyz;
+        
+        //inData.lightDir[i] = texCUBE(normalizationMap, inData.lightDir[i]).xyz;
+        inData.lightDir[i]/=dis;
+        attenuation = attenuate(dis, i);  
+        
+        diffuse = max(dot(normal, inData.lightDir[i]), 0) ;
+        specular = (diffuse>0)?pow(max(dot(normal, inData.halfVecs[i]), 0), 4):0;
+        
+        color += glstate.light[i].ambient + glstate.light[i].diffuse * tex2D(surfaceTexture, texcoord)* diffuse + specular * glstate.light[i].specular;
+    
+        /*color += glstate.light[i].diffuse * tex2D(surfaceTexture, texcoord) * max(dot(normal, lightDir[i]), 0) + 
+                 glstate.light[i].ambient +
+                 specular * glstate.light[i].specular;*/
+    }    
+}
+
+technique BumpmapDefault
+{
+    pass pass0
+    {
+       CullFaceEnable = false;
+       VertexProgram = compile vp40 BumpVertex(); 
+       FragmentProgram = compile fp40 BumpFragment();
+    }
+}

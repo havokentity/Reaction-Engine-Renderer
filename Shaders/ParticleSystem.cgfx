@@ -1,0 +1,43 @@
+/*	
+============================================================================================
+	Particle system effect compilation
+============================================================================================
+*/
+
+#define VERTEX_PROFILE arbvp1
+#define FRAGMENT_PROFILE arbfp1
+
+void DefaultParticle_VertexProgram(float4 position: POSITION,
+								   float2 texcoord: TEXCOORD0,
+								   float4 incolor: COLOR0, 
+
+								   float4x4 mvp: state.matrix.mvp,
+								   float4x4 mv: state.matrix.modelview[0],
+
+								   out float4 o_vertexdata: TEXCOORD1, 
+
+								   out float4 o_position: POSITION,
+								   out float2 o_texcoord: TEXCOORD0)
+{
+	o_texcoord = texcoord;
+
+	o_vertexdata = mul(mv
+
+	o_position = mul(mvp, position);
+}
+
+void DefaultParticle_FragmentProgram(float2 texcoord: TEXCOORD0,
+									 
+									 out float4 color0: COLOR0,
+									 out float4 color1: COLOR1)
+{
+}
+
+technique ParticleSystemEffect
+{
+	pass DefaultPass
+	{
+		VertexProgram = compile VERTEX_PROFILE DefaultParticle_VertexProgram();
+		FragmentProgram = compile FRAGMENT_PROFILE DefaultParticle_FragmentProgram();
+	}
+}

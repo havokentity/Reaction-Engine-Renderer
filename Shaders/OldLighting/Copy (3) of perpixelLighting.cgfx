@@ -1,0 +1,603 @@
+/*	
+============================================================================================
+	Copyright  Surreal.4 Interactive 2007-08
+
+	$Author: Rajesh Peter Douglas D'Monte	
+
+	Per pixel lighting effect with Omni directional soft shadows
+============================================================================================
+*/
+
+#define LOW_PRECISION 
+//#define VARIANCE
+#define SOFT
+/*
+    Low precision uses sqrt for more accurate values
+    with 16 bit floating point buffer
+    
+    High precision uses squared distance with 32 bit
+    floating point buffer (You decide which to use)
+*/
+
+//uniform float tm = LightSpotExponent[0];
+#define shadowMinDarkness 0.35
+#define shadowMinDarknessWithError 0.349
+
+#define NUM_SAMPLES_INTO_2 4
+
+//#define INCREMENT 0.03703 //For 3^3
+//#define INCREMENT 0.125 //For 2^3
+#define INCREMENT 0.0625 //For 4
+//#define INCREMENT 0.04 //For 5
+//#define INCREMENT 0.0277 //For 6
+//#define INCREMENT 0.015625 //For 8
+//#define INCREMENT 0.006944 //For 12
+#define NUM_SAMPLES NUM_SAMPLES_INTO_2>>1
+
+#ifdef VARIANCE
+    #define stepSize 0.75   //Stepsize for variance + PCF
+#else
+    #define stepSize 0.4    //Stepsize for PCF
+#endif
+
+uniform samplerCUBE shadowMap[2];
+//uniform sampler3D jitterSampler; 
+uniform float4 materialMode; 
+
+/*
+========================================
+	      materialMode Legend
+========================================
+
+diffuse.w is the specular map
+________________
+materialMode.x =
+----------------
+  0|>> no bump map
+---|------------------------------------
+  1|>> bump map using normal map
+---|------------------------------------
+  2|>> parallax map using normal map and
+   |   height map
+---|------------------------------------
+   |
+________________
+materialMode.y =
+----------------
+ 
+---|------------------------------------
+========================================
+*/
+
+/*
+============================================================================================
+	For expanding range compressed normals
+============================================================================================
+*/
+float3 expand(float3 v)
+{
+    return (v - 0.5f)*2;
+}
+
+/*
+============================================================================================
+	Light Attenuation function, dis= distance
+============================================================================================
+*/
+float attenuate(float dis, int light)
+{
+	//float attenuation = 1/(0.001f + 0.003f*dis + 0.0004*dis*dis);
+	float attenuation = 1/(glstate.light[light].attenuation.x + glstate.light[light].attenuation.y*dis + glstate.light[light].attenuation.z*dis*dis);
+	return attenuation;
+}
+
+/*
+============================================================================================
+	Spot Light smooth step effect
+============================================================================================
+*/
+float spotLightEffect(float cosAngle, float outerCone, float innerCone)
+{
+	if(innerCone <= cosAngle)
+	{
+		return 1;
+	} else {
+		return smoothstep(outerCone, innerCone, cosAngle);
+	}
+}
+
+/*
+============================================================================================
+	Per pixel lighting vertex program
+============================================================================================
+*/                                
+void PerPixelLight_vertex(float4 position:POSITION, 
+		  float3 normal: NORMAL,
+		  float2 texcoord:TEXCOORD0,
+
+		  float3 tangent: TEXCOORD3,
+		  float3 binormal: TEXCOORD4,
+
+		  out float3 oTangent: TEXCOORD3,
+		  out float3 oBinormal: TEXCOORD4,
+          
+		  out float4 oPos:POSITION,
+		  out float2 oTexCoord:TEXCOORD0,
+		  out float4 oModelViewPos:TEXCOORD5,
+		  out float4 oUTVertexData:TEXCOORD6, //xyz components contain normalized MV pos, and w is MV distance
+		  out float3 oUTNorm:COLOR	//normal transformed by the IT MV matrix
+      )
+{
+	oModelViewPos = mul(glstate.matrix.modelview[0], position);
+
+	oTexCoord = texcoord; //Out texture coord
+
+	oTangent = mul((float3x3)glstate.matrix.invtrans.modelview[0], tangent); //Out tangent
+	oBinormal = mul((float3x3)glstate.matrix.invtrans.modelview[0], binormal); //Out binormal
+	//oTangent = tangent; //Out tangent
+	//oBinormal = binormal; //Out binormal
+    
+	oUTVertexData.w = length(oModelViewPos.xyz); //TEXCOORD6 w component will store the distance per pixel from viewer
+	oUTVertexData.xyz = oModelViewPos.xyz/oUTVertexData.w;
+  
+	oUTNorm = mul((float3x3)glstate.matrix.invtrans.modelview[0], normal); //normal;
+	
+	oPos = mul(glstate.matrix.mvp, position);
+}
+
+/*
+============================================================================================
+	Function for evaluating light emitted by point lights
+============================================================================================
+*/  
+void pointLight(int light, float3 position, float3 normal,
+				float3 view, samplerCUBE shadowMapS,  out float diffuse, out float specular)
+{
+	float3 lightPos = glstate.light[light].position.xyz;
+	float3 lightVec  = (lightPos - position).xyz;	 
+
+	 
+	float3 lightVec2 = -mul((float3x3)glstate.matrix.inverse.modelview[0], lightVec);
+	float sqdis = dot(lightVec2, lightVec2);
+	float dis = sqrt(sqdis);  
+
+	lightVec = lightVec/dis;
+	//lightVec = normalize(lightVec);
+
+	// attenuation
+	float attenuation = attenuate(dis, light);
+
+	diffuse = max((dot(normal, lightVec)*attenuation + 0.5f)*0.6666f, 0);
+	//diffuse = max((dot(normal.xyz, lightVec.xyz)*attenuation), 0);
+	//SSS approximation using wrap lighting y = (x + wrap)/(1 + wrap)
+	// 1/(1 + wrap) => 0.6666f
+
+	float4 vShadowSample;
+	float shadow;
+  
+	if(diffuse > 0)
+	{
+
+	#ifdef VARIANCE
+		float4 moments;
+		float E_x2;
+		float Ex_2;
+		float variance;
+		float mue;
+	    
+		#ifdef SOFT
+			for(int x = 0;x < NUM_SAMPLES; x++)
+			{               
+				for(int y = 0;y < NUM_SAMPLES; y++)
+				{ 
+					float3 filteredLightDirection = lightVec2 + (lightVec2 - half3(x*stepSize, y*stepSize, 0));
+					//vShadowSample = texCUBE(shadowMapS, filteredLightDirection );
+	                
+					//shadow += (dis *0.98f - vShadowSample.x < 0.0f) ?1 : shadowMinDarkness;
+	                
+					moments = texCUBE(shadowMapS, filteredLightDirection);
+					E_x2 = moments.y;
+					Ex_2 = moments.x * moments.x;
+	              
+					variance = min(max(E_x2 - Ex_2, 0.0) + 0.10005, 1.0);
+					mue      = dis * 0.99f  - moments.x;
+					shadow   += (mue > 0.0) ? variance / (variance + mue * mue) + shadowMinDarkness : 1.0;
+				}                  
+			}
+	            
+			shadow *= INCREMENT;
+		#else
+			moments = texCUBE(shadowMapS, lightVec2);
+			E_x2 = moments.y;
+			Ex_2 = moments.x * moments.x;
+	          
+			variance = min(max(E_x2 - Ex_2, 0.0) + 0.00005, 1.0);
+			//float distance = length(W.xyz);
+			mue      = dis*0.99f - moments.x;
+			shadow   = (mue > 0.0) ? variance / (variance + mue * mue) + shadowMinDarkness : 1.0f;    
+		#endif
+	#else   
+		#ifdef LOW_PRECISION
+			#ifdef SOFT         
+				//float t = 0.0f;
+	            
+				for(int x = -NUM_SAMPLES;x < NUM_SAMPLES; x++)
+				{               
+					for(int y = -NUM_SAMPLES;y < NUM_SAMPLES; y++)
+					{  
+						//t += INCREMENT;
+						//float jitter = (ddx(vShadowSample.w) * ddy(vShadowSample.w)) + (ddx(diffuse) * ddy(diffuse));
+						float3 filteredLightDirection = lightVec2 + half3(x*stepSize, y*stepSize, 0);
+						//tex3D(jitterSampler, float3(x*stepSize, y*stepSize, x*y)).x
+						vShadowSample = texCUBE(shadowMapS, filteredLightDirection);	
+
+						//sam =  tex3D(jitterSampler, half3(x*stepSize, y*stepSize, 0));
+						//float ss = (dis * 0.99f - (ddx(vShadowSample.w) + vShadowSample.w)< 0.0f) ?1 : shadowMinDarkness; 
+						shadow += (dis * 0.99f - vShadowSample.w< 0.0f) ?1 : shadowMinDarkness; 
+	                              
+						//shadow += smoothstep((dis * 0.99f - vShadowSample.w< 0.0f), ss, (dis * 0.99f - (ddy(vShadowSample.w) + vShadowSample.w)< 0.0f));
+						/*
+						for(int z = 0;z < NUM_SAMPLES; z++)
+						{
+							float3 filteredLightDirection = lightVec2 + half3(x*stepSize, y*stepSize, z*stepSize);
+	                    
+							vShadowSample = texCUBE(shadowMapS, filteredLightDirection );
+							shadow += (dis * 0.99f - vShadowSample.x < 0.0f) ?1 : shadowMinDarkness;
+						}
+						*/
+					}
+				}
+	                
+				shadow *= INCREMENT;				
+
+				//sh = (shadow >= 0.9999f) ? 0 : 1;
+				//shadow = (shadow <= 0.999f && shadow > 0.35f)?shadow  * sam.z:shadow;
+			#else
+				vShadowSample = texCUBE(shadowMapS, lightVec2);
+				shadow = (dis *0.99f - vShadowSample.w < 0.0f) ? 1.0f : shadowMinDarkness;
+			#endif
+		#else
+		  #ifdef SOFT
+				for(int x = 0;x < NUM_SAMPLES; x++)
+				{               
+					for(int y = 0;y < NUM_SAMPLES; y++)
+					{
+					float3 filteredLightDirection = lightVec2 + half3(x*stepSize, y*stepSize, 0);
+					vShadowSample = texCUBE(shadowMapS, filteredLightDirection);
+					shadow += (sqdis *0.99f - vShadowSample.w < 0.0f) ?1 : shadowMinDarkness;
+					}
+				}
+	            
+				shadow *= INCREMENT;
+			#else
+				vShadowSample = texCUBE(shadowMapS, lightVec2);
+				shadow = (sqdis *0.99f - vShadowSample.w < 0.0f) ? 1.0f : shadowMinDarkness;
+			#endif
+		#endif
+	#endif
+
+		//diffuse = shadow <=shadowMinDarkness?shadow:diffuse*shadow;
+		//diffuse = (shadow > 0.9f)?diffuse*shadow:((diffuse > 1)?diffuse*0.5f*shadow:diffuse*shadow);
+		//diffuse = (shadow >=  0.9f)? diffuse : shadow;
+		//diffuse = (shadow >= 1)?  diffuse : ((diffuse > 1) ? diffuse/4*shadow : diffuse*shadow);
+
+		//diffuse = (shadow > 1) ? diffuse : diffuse * shadow; 
+		//shadow = smoothstep(shadowMinDarkness, 1, shadow + ddx(shadow));
+		diffuse = diffuse * shadow;// - ddx(shadow)*ddy(shadow)); 
+		//diffuse = diffuse * shadow;
+	}
+
+	float3 halfVector = normalize(lightVec + view);		
+
+	specular = 0;
+	specular = (diffuse>0)?pow(max(dot(normal, halfVector), 0), glstate.light[light].specular.w)*attenuation: 0;
+}
+
+/*
+============================================================================================
+	Function for evaluating light emitted by point lights with a normal bump map
+============================================================================================
+*/  
+void pointLightBump(int light, float3 position, float3 normalMapNormal,
+					float3 view, float3x3 TBNmatrix, float3 vertexNormal, samplerCUBE shadowMapS,
+					out float diffuse, out float specular)
+{
+	float3 lightPos = glstate.light[light].position.xyz;
+	float3 lightVec  = (lightPos - position).xyz;	
+	 
+	float3 lightVec2 = -mul((float3x3)glstate.matrix.inverse.modelview[0], lightVec);
+	float sqdis = dot(lightVec2, lightVec2);
+	float dis = sqrt(sqdis);  
+	lightVec = lightVec/dis;	
+
+	// attenuation
+	float attenuation = attenuate(dis, light);
+
+	float vertexNormalDiffuse = dot(vertexNormal, lightVec)*attenuation;
+
+	lightVec = mul(TBNmatrix, lightVec);
+	//view = mul(TBNmatrix, view);	
+	//lightVec = normalize(lightVec);	
+
+	diffuse = (vertexNormalDiffuse > 0) ? (max(dot(normalMapNormal, lightVec), 0) * max((vertexNormalDiffuse + 0.5f)*0.6666f, 0)): 0;
+	//diffuse = (lightVec.z > 0)?max((dot(normal, lightVec)*attenuation + 0.5f)*0.6666f, 0):max((dot(normal, lightVec)*attenuation + 0.5f)*0.6666f, 0) * diffuse2;
+	//diffuse = (lightVec.z > 0)?max((dot(normal, lightVec)*attenuation + 0.5f)*0.6666f, 0):max((dot(normal, lightVec)*attenuation + 0.5f)*0.6666f, 0)*lightVec.z;
+	//diffuse = max((dot(normal, lightVec)*attenuation + 0.5f)*0.6666f, 0)*lightVec.z;
+	//diffuse = max((dot(normal.xyz, lightVec.xyz)*attenuation), 0);
+	//SSS approximation using wrap lighting y = (x + wrap)/(1 + wrap)
+	// 1/(1 + wrap) => 0.6666f
+
+	float4 vShadowSample;
+	float shadow;
+  
+	if(diffuse > 0)
+	{
+
+	#ifdef VARIANCE
+		float4 moments;
+		float E_x2;
+		float Ex_2;
+		float variance;
+		float mue;
+	    
+		#ifdef SOFT
+			for(int x = 0;x < NUM_SAMPLES; x++)
+			{               
+				for(int y = 0;y < NUM_SAMPLES; y++)
+				{ 
+					float3 filteredLightDirection = lightVec2 + (lightVec2 - half3(x*stepSize, y*stepSize, 0));
+					//vShadowSample = texCUBE(shadowMapS, filteredLightDirection );
+	                
+					//shadow += (dis *0.98f - vShadowSample.x < 0.0f) ?1 : shadowMinDarkness;
+	                
+					moments = texCUBE(shadowMapS, filteredLightDirection);
+					E_x2 = moments.y;
+					Ex_2 = moments.x * moments.x;
+	              
+					variance = min(max(E_x2 - Ex_2, 0.0) + 0.10005, 1.0);
+					mue      = dis * 0.99f  - moments.x;
+					shadow   += (mue > 0.0) ? variance / (variance + mue * mue) + shadowMinDarkness : 1.0;
+				}                  
+			}
+	            
+			shadow *= INCREMENT;
+		#else
+			moments = texCUBE(shadowMapS, lightVec2);
+			E_x2 = moments.y;
+			Ex_2 = moments.x * moments.x;
+	          
+			variance = min(max(E_x2 - Ex_2, 0.0) + 0.00005, 1.0);
+			//float distance = length(W.xyz);
+			mue      = dis*0.99f - moments.x;
+			shadow   = (mue > 0.0) ? variance / (variance + mue * mue) + shadowMinDarkness : 1.0f;    
+		#endif
+	#else   
+		#ifdef LOW_PRECISION
+			#ifdef SOFT         
+				//float t = 0.0f;
+	            
+				for(int x = -NUM_SAMPLES; x < NUM_SAMPLES; x++)
+				{               
+					for(int y = -NUM_SAMPLES; y < NUM_SAMPLES; y++)
+					{  
+						//t += INCREMENT;
+						float3 filteredLightDirection = lightVec2 + half3(x*stepSize, y*stepSize, 0);
+						//tex3D(jitterSampler, float3(x*stepSize, y*stepSize, x*y)).x
+						vShadowSample = texCUBE(shadowMapS, filteredLightDirection );	
+
+						//sam =  tex3D(jitterSampler, half3(x*stepSize, y*stepSize, 0));
+
+						shadow += (dis * 0.99f - vShadowSample.w< 0.0f) ?1 : shadowMinDarkness;  						
+	                                            
+						//shadow += smoothstep(shadowMinDarkness, 1, shadow);
+						/*
+						for(int z = 0;z < NUM_SAMPLES; z++)
+						{
+							float3 filteredLightDirection = lightVec2 + half3(x*stepSize, y*stepSize, z*stepSize);
+	                    
+							vShadowSample = texCUBE(shadowMapS, filteredLightDirection );
+							shadow += (dis * 0.99f - vShadowSample.x < 0.0f) ?1 : shadowMinDarkness;
+						}
+						*/
+					}
+				}
+	                
+				shadow *= INCREMENT;				
+
+				//sh = (shadow >= 0.9999f) ? 0 : 1;
+				//shadow = (shadow <= 0.999f && shadow > 0.35f)?shadow  * sam.z:shadow;
+			#else
+				vShadowSample = texCUBE(shadowMapS, lightVec2);
+				shadow = (dis *0.99f - vShadowSample.w < 0.0f) ? 1.0f : shadowMinDarkness;
+			#endif
+		#else
+		  #ifdef SOFT
+				for(int x = 0;x < NUM_SAMPLES; x++)
+				{               
+					for(int y = 0;y < NUM_SAMPLES; y++)
+					{
+					float3 filteredLightDirection = lightVec2 + half3(x*stepSize, y*stepSize, 0);
+					vShadowSample = texCUBE(shadowMapS, filteredLightDirection );
+					shadow += (sqdis *0.99f - vShadowSample.w < 0.0f) ?1 : shadowMinDarkness;
+					}
+				}
+	            
+				shadow *= INCREMENT;
+			#else
+				vShadowSample = texCUBE(shadowMapS, lightVec2);
+				shadow = (sqdis *0.99f - vShadowSample.w < 0.0f) ? 1.0f : shadowMinDarkness;
+			#endif
+		#endif
+	#endif
+
+		//diffuse = shadow <=shadowMinDarkness?shadow:diffuse*shadow;
+		//diffuse = (shadow > 0.9f)?diffuse*shadow:((diffuse > 1)?diffuse*0.5f*shadow:diffuse*shadow);
+		//diffuse = (shadow >=  0.9f)? diffuse : shadow;
+		//diffuse = (shadow >= 1)?  diffuse : ((diffuse > 1) ? diffuse/4*shadow : diffuse*shadow);
+
+		//diffuse = (shadow > 1) ? diffuse : diffuse * shadow;    
+		diffuse = diffuse * shadow;//(shadow - ddx(shadow)*ddy(shadow));    
+		
+		float3 halfVector = normalize(lightVec + view);	
+		specular = pow(max(dot(normalMapNormal, halfVector), 0), glstate.light[light].specular.w)*attenuation;
+	}
+	//specular = 0;
+	//specular = (diffuse>0)?pow(max(dot(normalMapNormal, halfVector), 0), glstate.light[light].specular.w)*attenuation: 0;
+}
+
+/*
+============================================================================================
+	Spotlight code.. WARNING: not being used
+============================================================================================
+*/  
+void spotLight(int light, float3 position, float3 direction, float3 normal,
+			   float innerCone, float outerCone,
+			   float3 view, out float diffuse, out float specular)
+{
+	float3 lightPos = glstate.light[light].position.xyz;
+
+	float3 lightVec  = (lightPos - position).xyz;	
+    float dis = length(lightVec);
+	lightVec = normalize(lightVec);
+
+	// attenuation
+	float attenuation = attenuate(dis, light);
+
+	float cosAngle = dot(lightVec, float4(direction, 0));
+
+	float spotLightValue = spotLightEffect(cosAngle, outerCone, innerCone);
+	
+	diffuse = max(dot(normal.xyz, lightVec.xyz)*attenuation*spotLightValue, 0);
+
+	float3 halfVector = normalize(lightVec + view);	
+	
+	specular = 0;
+	specular = (diffuse>0)?saturate(pow(max(dot(normal, halfVector), 0), glstate.light[light].specular.w)*attenuation*spotLightValue):0;
+}
+
+/*
+============================================================================================
+	Per pixel lighting fragment program
+============================================================================================
+*/  
+void PerPixelLight_fragment(float2 texcoord: TEXCOORD0,
+							float4 position: TEXCOORD5,
+							float4 vertexData: TEXCOORD6, //xyz components contain normalized MV pos, and w is MV distance
+							float3 normal: COLOR,	
+
+							float3 tangent: TEXCOORD3,
+							float3 binormal: TEXCOORD4,
+
+							sampler2D texSampler: TEXUNIT0,   
+							sampler2D normalMapSampler: TEXUNIT1,
+
+		  out float4 color:COLOR)
+{
+	//float3 lightPos = mul(glstate.matrix..inverse.modelview[0], lightPos).xyz; 
+	//direction = mul((float3x3)glstate.matrix.modelview[0], direction); 
+	
+	//Normalize normal        
+	normal = normalize(normal);	
+
+	float4 diffuse = 0, specular = 0;
+	float tDiffuse = 0, tSpecular = 0;
+	float4 ambient = float4(0.0f, 0.0f, 0.0f, 0.0f);
+	float shadow = 0;	
+
+	//materialMode = 0;
+	if(materialMode.x == 1)
+	{
+		tangent = normalize(tangent);
+		binormal = normalize(binormal);
+
+		float3x3 TBNmatrix = float3x3(tangent, binormal, normal);
+
+		vertexData.xyz = -mul(TBNmatrix, vertexData.xyz);			
+
+		for(int i = 0; i<2;i++)
+		{
+			//pointLight(i, position.xyz, normal, -vertexData.xyz, pixelXY, tDiffuse, tSpecular);
+			pointLightBump(i, position.xyz, normalize(expand(tex2D(normalMapSampler, texcoord).xyz)),
+						   vertexData.xyz, TBNmatrix, normal, shadowMap[i], tDiffuse, tSpecular);
+			//spotLight(i, position, glstate.light[i].spot.direction, norm, 0.95, 0.5, view, tDiffuse, tSpecular);
+			diffuse += tDiffuse * glstate.light[i].diffuse;
+			specular += tSpecular * float4(glstate.light[i].specular.xyz, 1);
+			ambient += glstate.light[i].ambient;
+		}
+		
+		color = tex2D(texSampler, texcoord).rgba;
+		color = float4((diffuse*color.rgb + specular*color.a + ambient).xyz, vertexData.w);
+	} else if(materialMode.x == 2)
+	{
+		tangent = normalize(tangent);
+		binormal = normalize(binormal);
+
+		float3x3 TBNmatrix = float3x3(tangent, binormal, normal);
+
+		float fBumpScale = 0.05f;
+		vertexData.xyz = -mul(TBNmatrix, vertexData.xyz);
+
+		/*
+		float height = tex2D(heightMapSampler, texcoord).w * 0.05 - 0.02;
+		texcoord = texcoord + vertexData.xy * height;*/		
+
+		float fDepth = tex2D(normalMapSampler, texcoord).w;
+		float2 vHalfOffset = vertexData.xy * (fDepth) * fBumpScale * 0.25f;
+		
+		fDepth = (fDepth + tex2D(normalMapSampler, texcoord + vHalfOffset).w) * 0.25f;
+		vHalfOffset = vertexData.xy * (fDepth) * fBumpScale;		
+
+		fDepth = (fDepth + tex2D(normalMapSampler, texcoord + vHalfOffset).w) * 0.25f;
+		vHalfOffset = vertexData.xy * (fDepth) * fBumpScale;
+
+		fDepth = (fDepth + tex2D(normalMapSampler, texcoord + vHalfOffset).w) * 0.25f;
+		vHalfOffset = vertexData.xy * (fDepth) * fBumpScale;
+			
+		texcoord = texcoord + vHalfOffset;
+
+		for(int i = 0; i<2;i++)
+		{
+			//pointLight(i, position.xyz, normal, -vertexData.xyz, pixelXY, tDiffuse, tSpecular);
+			
+			pointLightBump(i, position.xyz, normalize(expand(tex2D(normalMapSampler, texcoord).xyz)),
+						   vertexData.xyz, TBNmatrix, normal, shadowMap[i], tDiffuse, tSpecular);
+
+			//spotLight(i, position, glstate.light[i].spot.direction, norm, 0.95, 0.5, view, tDiffuse, tSpecular);
+			diffuse += tDiffuse * glstate.light[i].diffuse;
+			specular += tSpecular * float4(glstate.light[i].specular.xyz, 1);
+			ambient += glstate.light[i].ambient;
+		}
+		
+		color = tex2D(texSampler, texcoord).rgba;
+		color = float4((diffuse*color.rgb + specular*color.a + ambient).xyz, vertexData.w);
+	} else {    
+		for(int i = 0; i<2;i++)
+		{
+			pointLight(i, position.xyz, normal, -vertexData.xyz, shadowMap[i], tDiffuse, tSpecular);
+			//spotLight(i, position, glstate.light[i].spot.direction, norm, 0.95, 0.5, view, tDiffuse, tSpecular);
+			diffuse += tDiffuse * glstate.light[i].diffuse;
+			specular += tSpecular * float4(glstate.light[i].specular.xyz, 1);
+			ambient += glstate.light[i].ambient;
+		}
+		
+		color = tex2D(texSampler, texcoord).rgba;
+		color = float4((diffuse*color.rgb + specular*color.a + ambient).xyz, vertexData.w);
+		//*((tex3D(jitterSampler, float3(pixelXY.xy, 0)).x > 0.35)?1:0);
+	}
+}
+
+/*
+============================================================================================
+	Per pixel lighting technique
+============================================================================================
+*/  
+technique PerPixelLighting
+{
+    pass Pass0
+    {        
+        CullFaceEnable = true;
+        CullFace = Back;
+        VertexProgram = compile vp40 PerPixelLight_vertex();
+        FragmentProgram = compile fp40 PerPixelLight_fragment();
+    }
+}

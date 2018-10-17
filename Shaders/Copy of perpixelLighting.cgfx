@@ -1,0 +1,300 @@
+/*	
+	Per pixel lighting effect
+*/
+
+#define LOW_PRECISION 
+//#define VARIANCE
+#define SOFT
+/*
+    Low precision uses sqrt for more accurate values
+    with 16 bit floating point buffer
+    
+    High precision uses squared distance with 32 bit
+    floating point buffer (You decide which to use)
+*/
+
+//uniform float tm = LightSpotExponent[0];
+#define TOTAL_FILTER 5
+#define shadowMinDarkness 0.35
+#define PCF_scale 0.10
+//#define PCF_scale_2 0.0625
+
+uniform samplerCUBE shadowMapS;
+uniform sampler3D jitterSampler;
+
+float INCREMENT = (1.0f - float(shadowMinDarkness))/float(TOTAL_FILTER);
+
+/*
+float3 filter[TOTAL_FILTER] = { {0.5f, 0.5f, 0.5f},
+                                {0.45f, 0.45f, 0.45f},
+                                {0.4f, 0.4f, 0.4f},
+                                {0.35f, 0.35f, 0.35f},
+                                {0.3f, 0.3f, 0.3f},
+                                {0.25f, 0.25f, 0.25f},
+                                {0.2f, 0.42f, 0.2f},
+                                {0.15f, 0.15f, 0.15f},
+                                {0.1f, 0.1f, 0.1f},
+                                {0.05f, 0.05f, 0.05f},
+                                {0, 0, 0} };*/
+                                
+float3 filter[TOTAL_FILTER] = { {PCF_scale, PCF_scale, PCF_scale},
+                                {PCF_scale*2, PCF_scale*2, PCF_scale*2},
+                                
+                                {PCF_scale*3, PCF_scale*3, PCF_scale*3},
+                                
+                                {PCF_scale*4, PCF_scale*4, PCF_scale*4},
+                                
+                                /*
+                                {-PCF_scale, PCF_scale, PCF_scale},
+                                
+                                {PCF_scale, PCF_scale, -PCF_scale},
+                                {-PCF_scale, PCF_scale, -PCF_scale},
+                                
+                                {PCF_scale, -PCF_scale, -PCF_scale},
+                                {-PCF_scale, -PCF_scale, -PCF_scale},
+                                /*
+                                {PCF_scale_2, -PCF_scale_2, PCF_scale_2},
+                                {-PCF_scale_2, -PCF_scale_2, PCF_scale_2},
+                                
+                                {PCF_scale_2, PCF_scale_2, PCF_scale_2},
+                                {-PCF_scale_2, PCF_scale_2, PCF_scale_2},
+                                
+                                {PCF_scale_2, PCF_scale_2, -PCF_scale_2},
+                                {-PCF_scale_2, PCF_scale_2, -PCF_scale_2},
+                                
+                                {PCF_scale_2, -PCF_scale_2, -PCF_scale_2},
+                                {-PCF_scale_2, -PCF_scale_2, -PCF_scale_2},          
+                                */
+                                {0, 0, 0} };                                
+                                
+void PerPixelLight_vertex(float4 position:POSITION, 
+		  float4 normal: NORMAL,
+		  float2 texcoord:TEXCOORD0,
+          
+		  out float4 oPos:POSITION,
+		  out float2 oTexcoord:TEXCOORD0,
+		  out float4 oUTPos:TEXCOORD6,
+		  out float4 oUTNorm:TEXCOORD7
+      //out float3 oVelocity:TEXCOORD5
+      )
+{
+	float4 mvPos = mul(glstate.matrix.modelview[0], position);
+
+	oTexcoord = texcoord;
+    
+	oUTPos = mvPos;
+  
+	oUTNorm = mul(glstate.matrix.invtrans.modelview[0], normal); //normal;
+	
+  oPos = mul(glstate.matrix.mvp, position);
+}
+
+float attenuate(float dis, int light)
+{
+	//float attenuation = 1/(0.001f + 0.003f*dis + 0.0004*dis*dis);
+	float attenuation = 1/(glstate.light[light].attenuation.x + glstate.light[light].attenuation.y*dis + glstate.light[light].attenuation.z*dis*dis);
+	return attenuation;
+}
+
+void pointLight(int light, float3 position, float3 normal,
+				float3 view, float4 pixelXY, out float diffuse, out float specular)
+{
+	float3 lightPos = glstate.light[light].position.xyz;
+	float3 lightVec  = (lightPos - position).xyz;	 
+  
+  float3 lightVec2 = -mul((float3x3)glstate.matrix.inverse.modelview[0], lightVec);
+  float sqdis = dot(lightVec2, lightVec2);
+  float dis = sqrt(sqdis);   
+  
+	lightVec = lightVec/dis;
+    
+  // attenuation
+	float attenuation = attenuate(dis, light);
+    
+  diffuse = max(dot(normal.xyz, lightVec.xyz)*attenuation, 0);
+    
+  float4 vShadowSample;
+  float shadow;
+  
+  if(diffuse > 0)
+  {
+  
+    #ifdef VARIANCE
+        float4 moments;
+        float E_x2;
+        float Ex_2;
+        float variance;
+        float mue;
+        
+        #ifdef SOFT
+            for(int  i = 0;i < TOTAL_FILTER; i++)
+            {
+                float3 filteredLightDirection = lightVec2 + (lightVec2 - filter[i]);
+                //vShadowSample = texCUBE(shadowMapS, filteredLightDirection );
+                
+                //shadow += (dis *0.98f - vShadowSample.x < 0.0f) ?1 : shadowMinDarkness;
+                
+                moments = texCUBE(shadowMapS, filteredLightDirection);
+                E_x2 = moments.y;
+                Ex_2 = moments.x * moments.x;
+              
+                variance = min(max(E_x2 - Ex_2, 0.0) + 0.10005, 1.0);
+                mue      = dis*0.98f - moments.x;
+                shadow   += (mue > 0.0) ? variance / (variance + mue * mue) + shadowMinDarkness : 1.0;
+            }
+                
+            shadow *= INCREMENT;
+        #else
+            moments = texCUBE(shadowMapS, lightVec2);
+            E_x2 = moments.y;
+            Ex_2 = moments.x * moments.x;
+              
+            variance = min(max(E_x2 - Ex_2, 0.0) + 0.00005, 1.0);
+            //float distance = length(W.xyz);
+            mue      = dis*0.98f - moments.x;
+            shadow   = (mue > 0.0) ? variance / (variance + mue * mue) + shadowMinDarkness : 1.0f;    
+        #endif
+    #else   
+        #ifdef LOW_PRECISION
+            #ifdef SOFT            
+                
+                /*
+                for(int i =0; i < 4; i++)
+                {
+                    float4 jitter = (2*tex3D(jitterSampler, jcoord) - 1.0f);
+                    float3 jcoord = float3(pixelXY.xy*300, 0); 
+                }*/
+                    
+                //float3 jcoord = float3(pixelXY.xy, 0); 
+                
+                for(int i = 0;i < TOTAL_FILTER; i++)
+                {                  
+                    //float4 jitter = tex3D(jitterSampler, jcoord) + 1.0f;
+                    //jcoord.z += 0.0625f;
+                        
+                    float3 filteredLightDirection = lightVec2 + filter[i];
+                        
+                    //shadow = tex3D(jitterSampler, jcoord ).x;                    
+                    //jcoord.z += 0.0625f;
+                    
+                    vShadowSample = texCUBE(shadowMapS, filteredLightDirection );
+                     shadow += (dis *0.98f - vShadowSample.x < 0.0f) ?1 : shadowMinDarkness;
+                    //shadow *= (jitter.x>0);
+                }
+                    
+                //shadow *= 0.0625;
+                shadow *= INCREMENT;
+            #else
+                vShadowSample = texCUBE(shadowMapS, lightVec2);
+                shadow = (dis *0.98f - vShadowSample.x < 0.0f) ? 1.0f : shadowMinDarkness;
+            #endif
+        #else
+          #ifdef SOFT
+                for(int  i = 0;i < TOTAL_FILTER; i++)
+                {
+                    float3 filteredLightDirection = lightVec2 + filter[i];
+                    vShadowSample = texCUBE(shadowMapS, filteredLightDirection );
+                    shadow += (sqdis *0.98f - vShadowSample.x < 0.0f) ?1 : shadowMinDarkness;
+                }
+                
+                shadow *= INCREMENT;
+            #else
+                vShadowSample = texCUBE(shadowMapS, lightVec2);
+                shadow = (sqdis *0.98f - vShadowSample.x < 0.0f) ? 1.0f : shadowMinDarkness;
+            #endif
+        #endif
+    #endif
+
+    diffuse *= shadow;
+
+  }
+
+	float3 halfVector = normalize(lightVec + view);		
+	
+	specular = 0;
+  specular = (diffuse>0)?pow(max(dot(normal, halfVector), 0), glstate.light[light].specular.w)*attenuation:0;
+}
+
+float spotLightEffect(float cosAngle, float outerCone, float innerCone)
+{
+	if(innerCone <= cosAngle)
+	{
+		return 1;
+	} else {
+		return smoothstep(outerCone, innerCone, cosAngle);
+	}
+}
+
+void spotLight(int light, float3 position, float3 direction, float3 normal,
+			   float innerCone, float outerCone,
+			   float3 view, out float diffuse, out float specular)
+{
+	float3 lightPos = glstate.light[light].position.xyz;
+
+	float3 lightVec  = (lightPos - position).xyz;	
+    float dis = length(lightVec);
+	lightVec = normalize(lightVec);
+
+	// attenuation
+	float attenuation = attenuate(dis, light);
+
+	float cosAngle = dot(lightVec, float4(direction, 0));
+
+	float spotLightValue = spotLightEffect(cosAngle, outerCone, innerCone);
+	
+	diffuse = max(dot(normal.xyz, lightVec.xyz)*attenuation*spotLightValue, 0);
+
+	float3 halfVector = normalize(lightVec + view);	
+	
+	specular = 0;
+	specular = (diffuse>0)?saturate(pow(max(dot(normal, halfVector), 0), glstate.light[light].specular.w)*attenuation*spotLightValue):0;
+}
+
+void PerPixelLight_fragment(float2 texcoord: TEXCOORD0,
+		  float4 position: TEXCOORD6,
+		  float4 normal: TEXCOORD7,		     
+      float4 pixelXY: WPOS,
+		  sampler2D texSampler: TEXUNIT0,     
+
+		  out float4 color:COLOR)
+{
+	//float3 lightPos = mul(glstate.matrix..inverse.modelview[0], lightPos).xyz; 
+	//direction = mul((float3x3)glstate.matrix.modelview[0], direction); 
+	
+	//normal
+	float3 norm = normal.xyz;
+    	// transform the normal into eye space
+        
+  norm = normalize(norm);	
+
+	float4 diffuse = 0, specular = 0;
+	float tDiffuse = 0, tSpecular = 0;
+	float4 ambient = float4(0.0f, 0.0f, 0.0f, 0.0f);
+
+	float3 view = (-normalize(position.xyz));
+
+	//float dis = dot(lightPos, lightPos);
+	//float depth    = textureCube(shadowSampler, v_WorldLightVec.xyz).r;       
+
+	for(int i = 0; i<1;i++)
+	{
+		pointLight(i, position.xyz, norm, view, pixelXY, tDiffuse, tSpecular);
+		//spotLight(i, position, glstate.light[i].spot.direction, norm, 0.95, 0.5, view, tDiffuse, tSpecular);
+		diffuse += tDiffuse * glstate.light[i].diffuse;
+		specular += tSpecular * float4(glstate.light[i].specular.xyz, 1);
+		ambient += glstate.light[i].ambient;
+	}
+
+	color = (diffuse*tex2D(texSampler, texcoord) + specular + ambient);//*((tex3D(jitterSampler, float3(pixelXY.xy, 0)).x > 0.35)?1:0);
+}
+
+technique PerPixelLighting
+{
+    pass Pass0
+    {        
+        CullFaceEnable = true;
+        CullFace = Back;
+        VertexProgram = compile vp40 PerPixelLight_vertex();
+        FragmentProgram = compile fp40 PerPixelLight_fragment();
+    }
+}

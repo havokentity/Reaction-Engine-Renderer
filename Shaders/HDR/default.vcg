@@ -1,0 +1,9 @@
+void main(float4 pos: POSITION,
+		  float2 tc: TEXCOORD0,
+	      out float4 o_pos: POSITION,
+		  out float2 o_tc: TEXCOORD0)
+{
+	//pos.x = (1024 - pos.x)/1024.0f;
+	o_pos = mul(glstate.matrix.mvp, pos);
+	o_tc = tc;
+}

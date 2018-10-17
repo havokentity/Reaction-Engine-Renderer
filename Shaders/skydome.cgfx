@@ -1,0 +1,76 @@
+/*	
+	Skydome effect
+*/
+
+//varying float intensity_sq, intensity;
+uniform float4 bbox = float4(2, 1.7f, 2, 0);
+//uniform float4 bbox = float4(1.5f, 0.3f, 1.5f, 0);
+uniform float time;
+uniform sampler2D cloudMapTexture;
+uniform float4 horizon = float4(0.45f, 0.7f, 0.9f, 0.50f);
+
+/*
+	Skydome vertex shader
+*/
+
+void skydomeVertexShader(float4 position:POSITION,		  
+		  
+             out float2 intensity: COLOR,
+						 out float4 texcoord: TEXCOORD0,
+						 out float4 o_position: POSITION)
+{   	
+	
+	float2 newUV  = float2((position.x - 0)/bbox.x,
+					   (position.z - 0)/bbox.z);
+
+	texcoord.x  = newUV.x + time*0.66;
+	texcoord.y  = newUV.y + time*0.33;
+	texcoord.xy *= 2.0;
+
+	texcoord.z = newUV.x + time*1.33;
+	texcoord.w = newUV.y + time*1.66;
+	texcoord.zw *= 3.0;
+
+	//texcoord.xy = float2(position.x / 2.0 + time,       position.z / 2.0);
+	//texcoord.zw = float2(position.x       + time / 2.0, position.z);
+
+	// Get the vertex height and scale it to 0 - 1 range.
+	intensity.x    = position.y / bbox.y;
+	intensity.x    = exp(clamp(intensity.x, 0.0, 1.0)) / 2.8;
+	intensity.y= intensity.x * intensity.x;
+
+
+	o_position = mul(glstate.matrix.mvp, position);
+}
+
+/*
+	Skydome fragment shader
+*/
+
+void skydomeFragmentShader(float4 texcoord: TEXCOORD0,
+                           float2 intensity: COLOR,
+		  
+						    out float4 o_fragment: COLOR)
+{
+    float4 noise1     = tex2D(cloudMapTexture, texcoord.xy);
+    float4 noise2     = tex2D(cloudMapTexture, texcoord.zw);
+
+	float4 cloudFrag  = (noise1 + noise2) *  intensity.y;
+	float4 cloudColor = float4((1.0 - intensity.x)*horizon.x,
+	                       (1.0 - intensity.x)*horizon.y,
+	                       intensity.x*horizon.z, 0.0);
+
+	o_fragment    = cloudColor * (1.0 - cloudFrag.x) + cloudFrag;
+}
+
+
+technique Skydome
+{
+	pass Pass0
+	{
+		CullFaceEnable = true;
+		CullFace = Front;
+		VertexProgram = compile vp40 skydomeVertexShader();
+		FragmentProgram = compile fp40 skydomeFragmentShader();
+	}
+}

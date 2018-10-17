@@ -1,0 +1,80 @@
+//Left
+
+glTexCoord3f(-1.0f, -1.0f, 1.0f);
+glVertex3f(-10, -10, 40);
+
+        glTexCoord3f(-1.0f, -1.0f, -1.0f);
+       glVertex3f(10, -10, 40);
+
+        glTexCoord3f(-1.0f, 1.0f, -1.0f);
+       glVertex3f(10, 10, 40);
+
+        glTexCoord3f(-1.0f, 1.0f, 1.0f);
+       glVertex3f(-10, 10, 40);
+
+//Right
+glTexCoord3f(1.0f, -1.0f, -1.0f);
+        glVertex3f(-10, -10, 40);
+
+        glTexCoord3f(1.0f, -1.0f, 1.0f);
+       glVertex3f(10, -10, 40);
+
+       glTexCoord3f(1.0f, 1.0f, 1.0f);
+       glVertex3f(10, 10, 40);
+
+         glTexCoord3f(1.0f, 1.0f, -1.0f);
+       glVertex3f(-10, 10, 40);
+
+//Top
+glTexCoord3f(1.0f, 1.0f, 1.0f);
+        glVertex3f(-10, -10, 40);
+
+          glTexCoord3f(-1.0f, 1.0f, 1.0f);
+       glVertex3f(10, -10, 40);
+
+      glTexCoord3f(-1.0f, 1.0f, -1.0f);
+       glVertex3f(10, 10, 40);
+
+         glTexCoord3f(1.0f, 1.0f, -1.0f);
+       glVertex3f(-10, 10, 40);
+
+//Bottom
+
+glTexCoord3f(1.0f, -1.0f, -1.0f);
+        glVertex3f(-10, -10, 40);
+
+         glTexCoord3f(-1.0f, -1.0f, -1.0f);
+       glVertex3f(10, -10, 40);
+
+       glTexCoord3f(-1.0f, -1.0f, 1.0f);
+       glVertex3f(10, 10, 40);
+
+        glTexCoord3f(1.0f, -1.0f, 1.0f);
+       glVertex3f(-10, 10, 40);
+
+//FRONT
+glTexCoord3f(1.0f, -1.0f, 1.0f);
+        glVertex3f(-10, -10, 40);
+
+         glTexCoord3f(-1.0f, -1.0f, 1.0f);
+       glVertex3f(10, -10, 40);
+
+       glTexCoord3f(-1.0f, 1.0f, 1.0f);
+       glVertex3f(10, 10, 40);
+
+        glTexCoord3f(1.0f, 1.0f, 1.0f);
+       glVertex3f(-10, 10, 40);
+
+//back
+
+glTexCoord3f(-1.0f, -1.0f, -1.0f);
+        glVertex3f(-10, -10, 40);
+
+         glTexCoord3f(1.0f, -1.0f, -1.0f);
+       glVertex3f(10, -10, 40);
+
+       glTexCoord3f(1.0f, 1.0f, -1.0f);
+       glVertex3f(10, 10, 40);
+
+        glTexCoord3f(-1.0f, 1.0f, -1.0f);
+       glVertex3f(-10, 10, 40);

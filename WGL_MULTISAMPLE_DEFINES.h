@@ -1,0 +1,14 @@
+#ifndef WGL_MULTISAMPLE_DEFINES
+#define WGL_MULTISAMPLE_DEFINES
+
+#define WGL_DRAW_TO_WINDOW_ARB         0x2001
+#define WGL_SUPPORT_OPENGL_ARB         0x2010
+#define WGL_DOUBLE_BUFFER_ARB          0x2011
+#define WGL_COLOR_BITS_ARB             0x2014
+#define WGL_ALPHA_BITS_ARB             0x201B
+#define WGL_DEPTH_BITS_ARB             0x2022
+#define WGL_STENCIL_BITS_ARB           0x2023
+#define WGL_ACCELERATION_ARB           0x2003
+#define WGL_FULL_ACCELERATION_ARB      0x2027
+
+#endif

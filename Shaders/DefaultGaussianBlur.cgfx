@@ -1,0 +1,126 @@
+/*	
+	this is a derivative of NVIDIA(r) Samples
+
+	bloom effect
+*/
+
+float2 horizontalDir = {1.0/200.0, 0};
+float2 verticalDir = {0, 1.0/200.0};
+
+
+//float Gauss[NUMWT] = {0.93, 0.8, 0.7, 0.6, 0.5, 0.4, 0.2, 0.1, 0.0};
+//====BREAK====
+//float Gauss[NUMWT] = {0.133571f, 0.126353f, 0.106955f, 0.081105f, 0.054913f, 0.033306f, 0.018077f, 0.008779f, 0.0f};
+//#define WT_NORMALIZE (1.0/(1.0+2.0*(0.133571f+ 0.126353f+ 0.106955f+ 0.081105f+ 0.054913f+ 0.033306f+ 0.018077f+ 0.008779f+ 0.0f)))
+//====BREAK====
+//float Gauss[NUMWT] = {0.93, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1};
+//#define WT_NORMALIZE (1.0/(1.0+2.0*(0.93 + 0.8 + 0.7 + 0.6 + 0.5 + 0.4 + 0.3 + 0.2 + 0.1)))
+//====BREAK====
+
+#define NUMWT 9
+float Gauss[NUMWT] = {1.0000, 0.9394, 0.7788, 0.5697, 0.3678, 0.2096, 0.1053, 0.0467, 0.0183};
+#define WT_NORMALIZE (1.0/(1.0+2.0*(1.0000+ 0.9394+ 0.7788+ 0.5697+ 0.3678+ 0.2096+ 0.1053+ 0.0467+ 0.0183)))
+
+/*
+#define NUMWT 5
+float Gauss[NUMWT] = {1.0, 0.8, 0.6, 0.4, 0.2};
+#define WT_NORMALIZE (1.0/(0.5f + 2.0*(1.0000+ 0.8+ 0.6+ 0.4+ 0.2)))
+*/
+
+sampler2D srcSampler;
+//sampler2D hSampler, vSampler;
+
+/*
+  Vertex Shader program
+*/
+float4 vpPassThrough(float4 P : POSITION, float4 tc : TEXCOORD0, out float4 tcout : TEXCOORD0) : POSITION
+{
+  tcout = tc;
+  return mul(glstate.matrix.mvp, P);
+}
+/*
+	Fragment Shader programs for Horizontal and Vertical
+	separable pass of gaussian blur
+*/
+float4 fpGaussianPassH(float4 tc : TEXCOORD0/*, uniform float2 dir*/) : COLOR
+{
+  float4 c2;
+  float4 c = tex2D(srcSampler, tc.xy) * (WT_NORMALIZE);
+  float2 step = horizontalDir;
+  float2 dir = step;
+  for(int i=0; i<NUMWT; i++)
+  {
+	c2 = tex2D(srcSampler, tc.xy + dir);
+	c += c2 * (Gauss[i]*WT_NORMALIZE);
+	c2 = tex2D(srcSampler, tc.xy - dir);
+	c += c2 * (Gauss[i]*WT_NORMALIZE);
+	dir += step;
+  }
+  return c;
+}
+float4 fpGaussianPassV(float4 tc : TEXCOORD0/*, uniform float2 dir*/) : COLOR
+{
+  float4 c2;
+  float4 c = tex2D(srcSampler, tc.xy) * (WT_NORMALIZE);
+  float2 step = verticalDir;
+  float2 dir = step;
+  for(int i=0; i<NUMWT; i++)
+  {
+	c2 = tex2D(srcSampler, tc.xy + dir);
+	c += c2 * (Gauss[i]*WT_NORMALIZE);
+	c2 = tex2D(srcSampler, tc.xy - dir);
+	c += c2 * (Gauss[i]*WT_NORMALIZE);
+	dir += step;
+  }
+  return c;
+}
+float4 fpFinalCompositing(float4 tc : TEXCOORD0) : COLOR
+{
+  //float4 c = lerp(tex2D(hSampler, tc.xy), tex2D(vSampler, tc.xy), 0.5f);
+  float4 c = tex2D(srcSampler, tc.xy);
+  //c *= blendFactor;
+  return c;
+}
+/*
+	Gaussian blur filter Technique
+*/
+technique Filter
+{  
+  pass horizontalPass
+  {
+	  /*
+    AlphaTestEnable = false;
+    BlendEnable = false;
+    CullFaceEnable = false;
+    DepthTestEnable = false;
+    DepthMask = false;*/
+    VertexProgram = compile arbvp1 vpPassThrough();
+    FragmentProgram = compile arbfp1 fpGaussianPassH();//horizontalDir);
+  }
+
+  pass verticalPass
+  {
+	  /*
+    AlphaTestEnable = false;
+    BlendEnable = false;
+    CullFaceEnable = false;
+    DepthTestEnable = false;
+    DepthMask = false;*/
+    VertexProgram = compile arbvp1 vpPassThrough();
+    FragmentProgram = compile arbfp1 fpGaussianPassV();//verticalDir);
+  }
+
+  pass drawFinal
+  {
+	 /*
+    AlphaTestEnable = false;
+    BlendEnable = true;
+    BlendFunc = int2(ConstantAlpha, One);
+    CullFaceEnable = false;
+    DepthTestEnable = false;
+    DepthMask = false;
+	*/
+    VertexProgram = compile arbvp1 vpPassThrough();
+    FragmentProgram = compile arbfp1 fpFinalCompositing();
+  }
+}

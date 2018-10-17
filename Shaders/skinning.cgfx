@@ -1,0 +1,61 @@
+
+uniform float4x4 bones[5];
+uniform float4x4 factory[5];
+
+void skin_vs(float4 position: POSITION,
+			 float4 weight: TEXCOORD1,			 
+			 out float2 dis: TEXCOORD0,
+			 out float3 blc: TEXCOORD1, 
+			 out float4 oPos: POSITION)
+{
+	float4 tWeight;
+	float4 ttt;
+	tWeight.x = mod(weight.x, 1);
+	tWeight.y = mod(weight.y, 1);
+	tWeight.z = mod(weight.z, 1);
+	ttt.x = weight.x + (-1 * tWeight.x);
+	ttt.y = weight.y + (-1 * tWeight.y);
+	ttt.z = weight.z + (-1 * tWeight.z);
+
+	float4 transformedPosition = float4(0, 0, 0, 0);
+	for(int i = 0; i < 3; i++)
+	{
+		tWeight.w = (i == 0)?tWeight.x:((i == 1)?tWeight.y:tWeight.z);
+		ttt.w = (i == 0)?ttt.x:((i == 1)?ttt.y:ttt.z);
+		float4x4 temp = bones[ttt.w];
+		float4x4 temp2 = factory[ttt.w];
+
+		temp = mul(temp2, temp);
+		temp = transpose(temp);
+		
+		transformedPosition += mul(temp, position) * tWeight.w;
+	}
+
+	blc = weight;
+	float4 mvPos = mul(glstate.matrix.modelview[0], position);
+	dis.x = length(mvPos);
+	dis.y = position.y * 0.1f;
+	
+	//transformedPosition = position;
+	oPos = mul(glstate.matrix.mvp, transformedPosition);
+}
+
+void skin_ps(float2 dis:TEXCOORD0,
+			 float3 blc:TEXCOORD1,
+			 out float4 color: COLOR)
+{
+	color = float4(float3(blc.z,dis.y, 0), dis.x);
+}
+
+
+technique SkinningTest
+{
+	pass pass0
+	{
+		//BlendEnable = true;
+		PolyGonMode = {FrontAndBack ,Line};
+		//CullFaceEnable = false;
+		VertexProgram = compile vp40 skin_vs();
+		FragmentProgram = compile fp40 skin_ps();
+	}
+}

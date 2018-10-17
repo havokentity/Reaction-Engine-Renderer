@@ -1,0 +1,22 @@
+uniform float time;
+
+void shade_vs(float4 position: POSITION,
+out float4 oPos: POSITION)
+{
+oPos = mul(glstate.matrix.mvp, position);
+}
+
+void shade_ps(out float4 color: COLOR)
+{
+color = float4(1,0,0,1);
+}
+
+
+technique test
+{
+pass pass0
+{
+VertexProgram = compile vp40 shade_vs();
+FragmentProgram = compile fp40 shade_ps();
+}
+}

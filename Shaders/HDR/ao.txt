@@ -1,0 +1,26 @@
+AmbientOcclusion(x,y) = 255 + GaussianAverage(x,y,sigma) - PixelValue(x,y)
+
+float ao = 0.0f;	
+	float2 offset = float2(2, 2);
+
+	//float dir = bl
+
+	for(int  i = 0; i < 16; i++)
+	{
+		float2 tc = float2(sin(offset.x), cos(offset.y));
+		//float ns = length(tex2D(noiseSampler, texcoord + tc/256.0f).xyz);
+		//float4 tmp = tex2D(blurSampler, texcoord + 2 * (ns*tc)/1024.0f);	
+		float4 tmp = tex2D(blurSampler, texcoord + tc/1024.0f);	
+		
+
+		
+		//ao = 1 + clamp((tmp.w - scene.w) * 0.1f, -2, 2);
+		ao += 1 + (100*(tmp.w - scene.w))* (1/(scene.w));
+
+		//ao = (abs(ddx(ao)) +  abs(ddy(ao)) > 2) ? ao * 0.5f: ao;
+		//ao = ns;
+
+		offset -= float2(0.01f, 0.01f);
+	}
+
+	ao /= 16;

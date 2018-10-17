@@ -1,0 +1,54 @@
+/*	
+	Copyright  Surreal.4 Interactive 2007-08
+
+	$Author: Rajesh Peter Douglas D'Monte	
+
+	Per pixel lighting effect
+*/
+
+
+#define LOW_PRECISION 
+//#define VARIANCE
+
+void Depth_vertex(float4 position:POSITION,
+                  out float4 posW: TEXCOORD3,
+
+                  out float4 oPos:POSITION)
+{
+    posW = mul(glstate.matrix.modelview[0], position);
+    //posW = float4(mul((float3x3)glstate.matrix.modelview[0], posW.xyz), 1);
+    //posW = position;
+    
+  	oPos = mul(glstate.matrix.mvp, position);
+}
+
+
+void Depth_fragment(float4 posW: TEXCOORD3,
+
+                    out float4 color:COLOR)
+{
+    //color = float4(0, 0, 0, 0);
+#ifdef VARIANCE       
+    color.y = dot(posW, posW); 
+    color.x = sqrt(color.y);    
+    //color.x  = length(posW);
+	  //color.y = color.x * color.x;
+#else 
+    #ifdef LOW_PRECISION
+        color.w = sqrt(dot(posW, posW));   
+    #else
+        color = dot(posW, posW);
+    #endif
+#endif
+}
+
+technique PerPixelLighting
+{
+    pass Pass0
+    {        
+        CullFaceEnable = false;
+        //CullFace = Back;
+        VertexProgram = compile vp40 Depth_vertex();
+        FragmentProgram = compile fp40 Depth_fragment();
+    }
+}

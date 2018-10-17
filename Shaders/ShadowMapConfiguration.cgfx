@@ -1,0 +1,14 @@
+//#define LOW_PRECISION 
+//#define VARIANCE
+//#define SOFT
+
+/*
+    VARIANCE uses variance shadow maps, SOFT and PRECISION
+    setting is ignored with VSM
+
+    Low precision uses sqrt for more accurate values
+    with 16 bit floating point buffer
+    
+    High precision uses squared distance with 32 bit
+    floating point buffer (You decide which to use)
+*/

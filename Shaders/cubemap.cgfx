@@ -1,0 +1,31 @@
+/*	
+	Test cube cgfx
+*/
+uniform samplerCUBE cubeSampler;
+
+void vert(float4 position:POSITION,
+          float3 tc: TEXCOORD0,
+
+          out float3 otc: TEXCOORD0,
+          out float4 oPos: POSITION)
+{
+    oPos = mul(glstate.matrix.mvp, position);	
+    
+    otc = tc;
+}
+
+void frag(float3 tc: TEXCOORD0, out float4 color:COLOR)
+{
+    color = /*float4(1,0,0,1);*/texCUBE(cubeSampler, tc);
+}
+
+technique CubeTech
+{  
+  pass Pass0
+  {
+  CullFaceEnable = true;
+    CullFace = Back;
+    VertexProgram = compile arbvp1 vert();
+    FragmentProgram = compile arbfp1 frag();
+  }
+}

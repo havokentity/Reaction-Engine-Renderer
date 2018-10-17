@@ -1,0 +1,1207 @@
+/*	
+============================================================================================
+	Per pixel lighting effect with Omni directional soft shadows
+============================================================================================
+*/
+
+#define VERTEX_PROFILE vp40
+#define FRAGMENT_PROFILE fp40
+
+#define LOW_PRECISION 
+//#define VARIANCE
+#define SOFT
+/*
+    Low precision uses sqrt for more accurate values
+    with 16 bit floating point buffer
+    
+    High precision uses squared distance with 32 bit
+    floating point buffer (You decide which to use)
+*/
+
+#define TOTAL_LIGHTS 1
+#define shadowMinDarkness 0.35
+#define shadowMinDarknessWithError 0.349
+#define emissiveScale 5
+
+#define NUM_SAMPLES_INTO_2 4
+
+//#define INCREMENT 0.03703 //For 3^3
+//#define INCREMENT 0.25 //For 2^2
+#define INCREMENT 0.0625 //For 4
+//#define INCREMENT 0.04 //For 5
+//#define INCREMENT 0.0277 //For 6
+//#define INCREMENT 0.015625 //For 8
+//#define INCREMENT 0.006944 //For 12
+//#define INCREMENT 0.027777 //For 6
+#define NUM_SAMPLES NUM_SAMPLES_INTO_2>>1
+
+#ifdef VARIANCE
+    #define stepSize 0.75   //Stepsize for variance + PCF
+#else
+    #define stepSize 0.4    //Stepsize for PCF
+#endif
+
+uniform samplerCUBE shadowMap[TOTAL_LIGHTS];
+
+/*
+============================================================================================
+	For expanding range compressed normals
+============================================================================================
+*/
+float3 expand(float3 v)
+{
+    return (v - 0.5f)*2;
+}
+
+/*
+============================================================================================
+	Light Attenuation function, dis= distance
+============================================================================================
+*/
+float attenuate(float dis, int light)
+{
+	//float attenuation = 1/(0.001f + 0.003f*dis + 0.0004*dis*dis);
+	float attenuation = 1/(glstate.light[light].attenuation.x + glstate.light[light].attenuation.y*dis + glstate.light[light].attenuation.z*dis*dis);
+	return attenuation;
+}
+
+/*
+============================================================================================
+	Spot Light smooth step effect
+============================================================================================
+*/
+float spotLightEffect(float cosAngle, float outerCone, float innerCone)
+{
+	if(innerCone <= cosAngle)
+	{
+		return 1;
+	} else {
+		return smoothstep(outerCone, innerCone, cosAngle);
+	}
+}
+
+/*
+============================================================================================
+	Spotlight code.. WARNING: not being used
+============================================================================================
+*/  
+void spotLight(int light, float3 position, float3 direction, float3 normal,
+			   float innerCone, float outerCone,
+			   float3 view, out float diffuse, out float specular)
+{
+	float3 lightPos = glstate.light[light].position.xyz;
+
+	float3 lightVec  = (lightPos - position).xyz;	
+    float dis = length(lightVec);
+	lightVec = normalize(lightVec);
+
+	// attenuation
+	float attenuation = attenuate(dis, light);
+
+	float cosAngle = dot(lightVec, float4(direction, 0));
+
+	float spotLightValue = spotLightEffect(cosAngle, outerCone, innerCone);
+	
+	diffuse = max(dot(normal.xyz, lightVec.xyz)*attenuation*spotLightValue, 0);
+
+	float3 halfVector = normalize(lightVec + view);	
+	
+	specular = 0;
+	specular = (diffuse>0)?saturate(pow(max(dot(normal, halfVector), 0), glstate.light[light].specular.w)*attenuation*spotLightValue):0;
+}
+
+/*
+============================================================================================
+	Function for evaluating light emitted by point lights
+============================================================================================
+*/  
+void pointLightForDefaultPPL(int light, float3 position, float3 normal,
+				float3 view, samplerCUBE shadowMapS,  out float diffuse, out float specular)
+{
+	float3 lightVec  = (glstate.light[light].position.xyz - position).xyz;		 
+	float3 lightVec2 = -mul((float3x3)glstate.matrix.inverse.modelview[0], lightVec);
+
+	float sqdis = dot(lightVec2, lightVec2);
+	float dis = sqrt(sqdis);  
+
+	lightVec = lightVec/dis;
+	//lightVec = normalize(lightVec);
+
+	// attenuation
+	float attenuation = attenuate(dis, light);
+
+	diffuse = max((dot(normal, lightVec)*attenuation + 0.5f)*0.6666f, 0);
+	//diffuse = max((dot(normal.xyz, lightVec.xyz)*attenuation), 0);
+	//SSS approximation using wrap lighting y = (x + wrap)/(1 + wrap)
+	// 1/(1 + wrap) => 0.6666f
+
+	half4 vShadowSample;
+	specular = 0;
+	float shadow;
+  
+	if(diffuse > 0)
+	{	
+		#ifdef SOFT         
+			for(int x = -NUM_SAMPLES;x < NUM_SAMPLES; x++)
+			{               
+				for(int y = -NUM_SAMPLES;y < NUM_SAMPLES; y++)
+				{  
+					//float jitter = (ddx(vShadowSample.w) * ddy(vShadowSample.w)) + (ddx(diffuse) * ddy(diffuse));
+					float3 filteredLightDirection = lightVec2 + half3(x*stepSize, y*stepSize, 0);
+					//tex3D(jitterSampler, float3(x*stepSize, y*stepSize, x*y)).x
+					vShadowSample = texCUBE(shadowMapS, filteredLightDirection);	
+
+					//sam =  tex3D(jitterSampler, half3(x*stepSize, y*stepSize, 0));
+					//float ss = (dis * 0.99f - (ddx(vShadowSample.w) + vShadowSample.w)< 0.0f) ?1 : shadowMinDarkness; 
+					shadow += (dis * 0.99f - vShadowSample.w< 0.0f) ?1 : shadowMinDarkness; 
+				}
+			}
+                
+			shadow *= INCREMENT;				
+		#else
+			vShadowSample = texCUBE(shadowMapS, lightVec2);
+			shadow = (dis *0.99f - vShadowSample.w < 0.0f) ? 1.0f : shadowMinDarkness;
+		#endif		
+
+		//diffuse = (shadow > 1) ? diffuse : diffuse * shadow; 
+		//shadow = smoothstep(shadowMinDarkness, 1, shadow + ddx(shadow));
+		diffuse = diffuse * shadow;// - ddx(shadow)*ddy(shadow)); 
+		//diffuse = diffuse * shadow;
+		float3 halfVector = normalize(lightVec + view);		
+		
+		specular = pow(max(dot(normal, halfVector), 0), glstate.light[light].specular.w)*attenuation;
+	}
+}
+
+/*
+============================================================================================
+	Function for evaluating light emitted by point lights (No Specular)
+============================================================================================
+*/  
+void pointLightForDefaultPPL_no_specular(int light, float3 position, float3 normal,
+				float3 view, samplerCUBE shadowMapS,  out float diffuse)
+{
+	float3 lightVec  = (glstate.light[light].position.xyz - position).xyz;		 
+	float3 lightVec2 = -mul((float3x3)glstate.matrix.inverse.modelview[0], lightVec);
+
+	float sqdis = dot(lightVec2, lightVec2);
+	float dis = sqrt(sqdis);  
+
+	lightVec = lightVec/dis;
+	//lightVec = normalize(lightVec);
+
+	// attenuation
+	float attenuation = attenuate(dis, light);
+
+	diffuse = max((dot(normal, lightVec)*attenuation + 0.5f)*0.6666f, 0);
+	//diffuse = max((dot(normal.xyz, lightVec.xyz)*attenuation), 0);
+	//SSS approximation using wrap lighting y = (x + wrap)/(1 + wrap)
+	// 1/(1 + wrap) => 0.6666f
+
+	half4 vShadowSample;
+	float shadow;
+  
+	if(diffuse > 0)
+	{	
+		#ifdef SOFT         
+			for(int x = -NUM_SAMPLES;x < NUM_SAMPLES; x++)
+			{               
+				for(int y = -NUM_SAMPLES;y < NUM_SAMPLES; y++)
+				{  
+					//float jitter = (ddx(vShadowSample.w) * ddy(vShadowSample.w)) + (ddx(diffuse) * ddy(diffuse));
+					float3 filteredLightDirection = lightVec2 + half3(x*stepSize, y*stepSize, 0);
+					//tex3D(jitterSampler, float3(x*stepSize, y*stepSize, x*y)).x
+					vShadowSample = texCUBE(shadowMapS, filteredLightDirection);	
+
+					//sam =  tex3D(jitterSampler, half3(x*stepSize, y*stepSize, 0));
+					//float ss = (dis * 0.99f - (ddx(vShadowSample.w) + vShadowSample.w)< 0.0f) ?1 : shadowMinDarkness; 
+					shadow += (dis * 0.98f - vShadowSample.w< 0.0f) ?1 : shadowMinDarkness;
+				}
+			}
+                
+			shadow *= INCREMENT;				
+		#else
+			vShadowSample = texCUBE(shadowMapS, lightVec2);
+			shadow = (dis *0.99f - vShadowSample.w < 0.0f) ? 1.0f : shadowMinDarkness;
+		#endif		
+
+		//diffuse = (shadow > 1) ? diffuse : diffuse * shadow; 
+		//shadow = smoothstep(shadowMinDarkness, 1, shadow + ddx(shadow));
+		diffuse = diffuse * shadow;// - ddx(shadow)*ddy(shadow)); 
+		//diffuse = diffuse * shadow;	
+	}
+}
+
+/*
+============================================================================================
+	Function for evaluating light emitted by point lights with a normal and parallax map
+============================================================================================
+*/  
+void pointLightForBumpSurfaces(int light, float3 position, float3 normalMapNormal,
+					float3 view, float3x3 TBNmatrix, float3 vertexNormal, samplerCUBE shadowMapS,
+					out float diffuse, out float specular)
+{
+	float3 lightVec  = (glstate.light[light].position.xyz - position).xyz;		 
+	float3 lightVec2 = -mul((float3x3)glstate.matrix.inverse.modelview[0], lightVec);
+
+	float sqdis = dot(lightVec2, lightVec2);
+	float dis = sqrt(sqdis);  
+	lightVec = lightVec/dis;	
+
+	// attenuation
+	float attenuation = attenuate(dis, light);
+
+	float vertexNormalDiffuse = dot(vertexNormal, lightVec)*attenuation;
+
+	lightVec = mul(TBNmatrix, lightVec);
+	//view = mul(TBNmatrix, view);	
+	//lightVec = normalize(lightVec);	
+
+	diffuse = (vertexNormalDiffuse > 0) ? (max(dot(normalMapNormal, lightVec) * (vertexNormalDiffuse + 0.5f)*0.6666, 0)): 0;
+	//diffuse = max((dot(normal.xyz, lightVec.xyz)*attenuation), 0);
+	//SSS approximation using wrap lighting y = (x + wrap)/(1 + wrap)
+	// 1/(1 + wrap) => 0.6666f
+
+	half4 vShadowSample;
+	float shadow;
+	specular = 0;
+  
+	if(diffuse > 0)
+	{
+		#ifdef SOFT                     
+			for(int x = -NUM_SAMPLES; x < NUM_SAMPLES; x++)
+			{               
+				for(int y = -NUM_SAMPLES; y < NUM_SAMPLES; y++)
+				{  
+					float3 filteredLightDirection = lightVec2 + half3(x*stepSize, y*stepSize, 0);
+					//tex3D(jitterSampler, float3(x*stepSize, y*stepSize, x*y)).x
+					vShadowSample = texCUBE(shadowMapS, filteredLightDirection );	
+
+					//sam =  tex3D(jitterSampler, half3(x*stepSize, y*stepSize, 0));
+
+					shadow += (dis * 0.99f - vShadowSample.w< 0.0f) ?1 : shadowMinDarkness;  	
+				}
+			}
+                
+			shadow *= INCREMENT;				
+
+			//sh = (shadow >= 0.9999f) ? 0 : 1;
+			//shadow = (shadow <= 0.999f && shadow > 0.35f)?shadow  * sam.z:shadow;
+		#else
+			vShadowSample = texCUBE(shadowMapS, lightVec2);
+			shadow = (dis *0.99f - vShadowSample.w < 0.0f) ? 1.0f : shadowMinDarkness;
+		#endif		
+
+		//diffuse = (shadow > 1) ? diffuse : diffuse * shadow;    
+		diffuse = diffuse * shadow;//(shadow - ddx(shadow)*ddy(shadow));    
+		
+		float3 halfVector = normalize(lightVec + view);	
+		specular = shadow * pow(max(dot(normalMapNormal, halfVector), 0), glstate.light[light].specular.w)*attenuation;
+	}	
+}
+
+/*
+======================================================================================================
+	Function for evaluating light emitted by point lights with a normal and parallax map (No specular)
+======================================================================================================
+*/  
+void pointLightForBumpSurfaces_no_specular(int light, float3 position, float3 normalMapNormal,
+					float3 view, float3x3 TBNmatrix, float3 vertexNormal, samplerCUBE shadowMapS,
+					out float diffuse)
+{
+	float3 lightVec  = (glstate.light[light].position.xyz - position).xyz;		 
+	float3 lightVec2 = -mul((float3x3)glstate.matrix.inverse.modelview[0], lightVec);
+
+	float sqdis = dot(lightVec2, lightVec2);
+	float dis = sqrt(sqdis);  
+	lightVec = lightVec/dis;	
+
+	// attenuation
+	float attenuation = attenuate(dis, light);
+
+	float vertexNormalDiffuse = dot(vertexNormal, lightVec)*attenuation;
+
+	lightVec = mul(TBNmatrix, lightVec);
+	//view = mul(TBNmatrix, view);	
+	//lightVec = normalize(lightVec);	
+
+	diffuse = (vertexNormalDiffuse > 0) ? (max(dot(normalMapNormal, lightVec) * (vertexNormalDiffuse + 0.5f)*0.6666, 0)): 0;
+	//diffuse = max((dot(normal.xyz, lightVec.xyz)*attenuation), 0);
+	//SSS approximation using wrap lighting y = (x + wrap)/(1 + wrap)
+	// 1/(1 + wrap) => 0.6666f
+
+	half4 vShadowSample;
+	float shadow;
+  
+	if(diffuse > 0)
+	{
+		#ifdef SOFT                     
+			for(int x = -NUM_SAMPLES; x < NUM_SAMPLES; x++)
+			{               
+				for(int y = -NUM_SAMPLES; y < NUM_SAMPLES; y++)
+				{  
+					float3 filteredLightDirection = lightVec2 + half3(x*stepSize, y*stepSize, 0);
+					//tex3D(jitterSampler, float3(x*stepSize, y*stepSize, x*y)).x
+					vShadowSample = texCUBE(shadowMapS, filteredLightDirection );	
+
+					//sam =  tex3D(jitterSampler, half3(x*stepSize, y*stepSize, 0));
+
+					shadow += (dis * 0.99f - vShadowSample.w< 0.0f) ?1 : shadowMinDarkness;  	
+				}
+			}
+                
+			shadow *= INCREMENT;				
+
+			//sh = (shadow >= 0.9999f) ? 0 : 1;
+			//shadow = (shadow <= 0.999f && shadow > 0.35f)?shadow  * sam.z:shadow;
+		#else
+			vShadowSample = texCUBE(shadowMapS, lightVec2);
+			shadow = (dis *0.99f - vShadowSample.w < 0.0f) ? 1.0f : shadowMinDarkness;
+		#endif		
+
+		//diffuse = (shadow > 1) ? diffuse : diffuse * shadow;    
+		diffuse = diffuse * shadow;//(shadow - ddx(shadow)*ddy(shadow));    
+	}	
+}
+
+/*
+============================================================================================
+	Default Per pixel lighting vertex program
+============================================================================================
+*/                                
+void PerPixelLight_default_vertex(float4 position:POSITION, 
+		  float3 normal: NORMAL,
+		  float2 texcoord:TEXCOORD0,
+          
+		  out float4 oPos:POSITION,
+		  out float2 oTexCoord:TEXCOORD0,
+		  out float4 oModelViewPos:TEXCOORD5,
+		  out float4 oUTVertexData:TEXCOORD6, //xyz components contain normalized MV pos, and w is MV distance
+		  out float3 oUTNorm:TEXCOORD7)	//normal transformed by the IT MV matrix
+{
+	oModelViewPos = mul(glstate.matrix.modelview[0], position);
+
+	oTexCoord = texcoord; //Out texture coord
+    
+	oUTVertexData.w = length(oModelViewPos.xyz); //TEXCOORD6 w component will store the distance per pixel from viewer
+	oUTVertexData.xyz = oModelViewPos.xyz/oUTVertexData.w;///oUTVertexData.w;
+  
+	oUTNorm = mul((float3x3)glstate.matrix.invtrans.modelview[0], normal); //normal;
+	
+	oPos = mul(glstate.matrix.mvp, position);
+}
+
+/*
+============================================================================================
+	Default Per pixel lighting fragment program
+============================================================================================
+*/  
+void PerPixelLight_default_fragment(float2 texcoord: TEXCOORD0,
+							float4 position: TEXCOORD5,
+							float4 vertexData: TEXCOORD6, //xyz components contain normalized MV pos, and w is MV distance
+							float3 normal: TEXCOORD7,	
+
+							sampler2D texSampler: TEXUNIT0,   
+							sampler2D normalMapSampler: TEXUNIT1,
+
+							out float4 color:COLOR)
+{	
+	//Normalize normal        
+	normal = normalize(normal);	
+
+	float3 diffuse = 0, specular = 0;
+	float tDiffuse = 0, tSpecular = 0;
+	float3 ambient = float3(0.0f, 0.0f, 0.0f);	
+	
+	for(int i = 0; i<TOTAL_LIGHTS;i++)
+	{
+		pointLightForDefaultPPL(i, position.xyz, normal, -vertexData.xyz, shadowMap[i], tDiffuse, tSpecular);
+		//spotLight(i, position, glstate.light[i].spot.direction, norm, 0.95, 0.5, view, tDiffuse, tSpecular);
+		diffuse += tDiffuse * glstate.light[i].diffuse.xyz;
+		specular += tSpecular * glstate.light[i].specular.xyz;
+		ambient += glstate.light[i].ambient.xyz;
+	}
+	
+	color = tex2D(texSampler, texcoord).rgba;
+	color = float4((diffuse*color.rgb + specular * color.a + ambient).xyz, vertexData.w);
+}
+
+/*
+============================================================================================
+	Default Per pixel lighting fragment program (No Specular)
+============================================================================================
+*/  
+void PerPixelLight_default_no_specular_fragment(float2 texcoord: TEXCOORD0,
+							float4 position: TEXCOORD5,
+							float4 vertexData: TEXCOORD6, //xyz components contain normalized MV pos, and w is MV distance
+							float3 normal: TEXCOORD7,	
+
+							sampler2D texSampler: TEXUNIT0,   
+							sampler2D normalMapSampler: TEXUNIT1,
+
+							out float4 color:COLOR,
+							out float4 color2:COLOR1)
+{	
+	//Normalize normal        
+	normal = normalize(normal);	
+
+	float3 diffuse = 0;
+	float tDiffuse = 0;
+	float3 ambient = float3(0.0f, 0.0f, 0.0f);
+	
+	for(int i = 0; i<TOTAL_LIGHTS;i++)
+	{
+		pointLightForDefaultPPL_no_specular(i, position.xyz, normal, -vertexData.xyz, shadowMap[i], tDiffuse);
+		//spotLight(i, position, glstate.light[i].spot.direction, norm, 0.95, 0.5, view, tDiffuse, tSpecular);
+		diffuse += tDiffuse * glstate.light[i].diffuse.xyz;
+		ambient += glstate.light[i].ambient.xyz;
+	}
+	
+	position.w = length(position.xyz);
+
+	color.rgb = tex2D(texSampler, texcoord).rgb;
+	color.rgba = float4((diffuse*color.rgb + ambient).xyz, position.w);
+	//color.rgba = (tex2D(texSampler, texcoord).rgb, vertexData.w);	
+	//(v - 0.5) * 2;
+	color2.rgb = (position.xyz/position.w + 1.0f) * 0.5f;
+}
+
+/*
+============================================================================================
+	Default Per pixel lighting fragment program (Emissive surfaces)
+============================================================================================
+*/  
+void PerPixelLight_default_emissive_fragment(float2 texcoord: TEXCOORD0,
+							float4 position: TEXCOORD5,
+							float4 vertexData: TEXCOORD6, //xyz components contain normalized MV pos, and w is MV distance
+							float3 normal: TEXCOORD7,	
+
+							sampler2D texSampler: TEXUNIT0,   
+							sampler2D normalMapSampler: TEXUNIT1,
+
+							out float4 color:COLOR)
+{	
+	//Normalize normal        
+	normal = normalize(normal);	
+
+	float3 diffuse = 0, specular = 0;
+	float tDiffuse = 0, tSpecular = 0;
+	float3 ambient = float3(0.0f, 0.0f, 0.0f);
+	
+	for(int i = 0; i<TOTAL_LIGHTS;i++)
+	{
+		pointLightForDefaultPPL(i, position.xyz, normal, -vertexData.xyz, shadowMap[i], tDiffuse, tSpecular);
+		//spotLight(i, position, glstate.light[i].spot.direction, norm, 0.95, 0.5, view, tDiffuse, tSpecular);
+		diffuse += tDiffuse * glstate.light[i].diffuse.xyz;
+		specular += tSpecular * glstate.light[i].specular.xyz;
+		ambient += glstate.light[i].ambient.xyz;
+	}
+	
+	color = tex2D(texSampler, texcoord).rgba;
+	color = float4((diffuse*color.rgb + color.rgb * color.a * emissiveScale + specular + ambient).xyz, vertexData.w);
+}
+
+/*
+============================================================================================
+	Default Per pixel lighting fragment program (Emissive surfaces, No Specular)
+============================================================================================
+*/  
+void PerPixelLight_default_emissive_no_specular_fragment(float2 texcoord: TEXCOORD0,
+							float4 position: TEXCOORD5,
+							float4 vertexData: TEXCOORD6, //xyz components contain normalized MV pos, and w is MV distance
+							float3 normal: TEXCOORD7,	
+
+							sampler2D texSampler: TEXUNIT0,   
+							sampler2D normalMapSampler: TEXUNIT1,
+
+							out float4 color:COLOR)
+{	
+	//Normalize normal        
+	normal = normalize(normal);	
+
+	float3 diffuse = 0;
+	float tDiffuse = 0;
+	float3 ambient = float3(0.0f, 0.0f, 0.0f);
+	
+	for(int i = 0; i<TOTAL_LIGHTS;i++)
+	{
+		pointLightForDefaultPPL_no_specular(i, position.xyz, normal, -vertexData.xyz, shadowMap[i], tDiffuse);
+		//spotLight(i, position, glstate.light[i].spot.direction, norm, 0.95, 0.5, view, tDiffuse, tSpecular);
+		diffuse += tDiffuse * glstate.light[i].diffuse.xyz;
+		ambient += glstate.light[i].ambient.xyz;
+	}
+	
+	color = tex2D(texSampler, texcoord).rgba;
+	color = float4((diffuse*color.rgb + color.rgb * color.a * emissiveScale + ambient).xyz, vertexData.w);
+}
+
+/*
+============================================================================================
+	Normal mapping and Parallax mapping COMMON Per pixel lighting vertex program
+============================================================================================
+*/                                
+void PerPixelLight_normal_parallax_vertex(float4 position:POSITION, 
+		  float3 normal: NORMAL,
+		  float2 texcoord:TEXCOORD0,
+
+		  float3 tangent: TEXCOORD3,
+		  float3 binormal: TEXCOORD4,
+
+		  out float3 oTangent: TEXCOORD3,
+		  out float3 oBinormal: TEXCOORD4,
+          
+		  out float4 oPos:POSITION,
+		  out float2 oTexCoord:TEXCOORD0,
+		  out float4 oModelViewPos:TEXCOORD5,
+		  out float4 oUTVertexData:TEXCOORD6, //xyz components contain normalized MV pos, and w is MV distance
+		  out float3 oUTNorm:TEXCOORD7)	//normal transformed by the IT MV matrix
+{
+	oModelViewPos = mul(glstate.matrix.modelview[0], position);
+
+	oTexCoord = texcoord; //output the texture coord in TEXCOORD0
+
+	oTangent = mul((float3x3)glstate.matrix.invtrans.modelview[0], tangent); //Out tangent in TEXCOORD3
+	oBinormal = mul((float3x3)glstate.matrix.invtrans.modelview[0], binormal); //Out binormal in TEXCOORD4
+    
+	oUTVertexData.w = length(oModelViewPos.xyz); //TEXCOORD6 w component will store the distance per pixel from viewer
+	oUTVertexData.xyz = oModelViewPos.xyz/oUTVertexData.w;
+  
+	oUTNorm = mul((float3x3)glstate.matrix.invtrans.modelview[0], normal); //normal;
+	
+	oPos = mul(glstate.matrix.mvp, position);
+}
+
+/*
+============================================================================================
+	Normal mapping Per pixel lighting fragment program
+============================================================================================
+*/  
+void PerPixelLight_normal_fragment(float2 texcoord: TEXCOORD0,
+							float4 position: TEXCOORD5,
+							float4 vertexData: TEXCOORD6, //xyz components contain normalized MV pos, and w is MV distance
+							float3 normal: TEXCOORD7,	
+
+							float3 tangent: TEXCOORD3,
+							float3 binormal: TEXCOORD4,
+
+							sampler2D texSampler: TEXUNIT0,   
+							sampler2D normalMapSampler: TEXUNIT1,
+
+							out float4 color:COLOR)
+{	
+	//Normalize normal        
+	normal = normalize(normal);	
+
+	float3 diffuse = 0, specular = 0;
+	float tDiffuse = 0, tSpecular = 0;
+	float3 ambient = float3(0.0f, 0.0f, 0.0f);
+
+	//tangent = normalize(tangent);
+	//binormal = normalize(binormal);
+
+	float3x3 TBNmatrix = float3x3(tangent, binormal, normal);
+
+	vertexData.xyz = -mul(TBNmatrix, vertexData.xyz);			
+
+	for(int i = 0; i<TOTAL_LIGHTS;i++)
+	{
+		pointLightForBumpSurfaces(i, position.xyz, normalize(expand(tex2D(normalMapSampler, texcoord).xyz)),
+					   vertexData.xyz, TBNmatrix, normal, shadowMap[i], tDiffuse, tSpecular);
+		//spotLight(i, position, glstate.light[i].spot.direction, norm, 0.95, 0.5, view, tDiffuse, tSpecular);
+		diffuse += tDiffuse * glstate.light[i].diffuse.xyz;
+		specular += tSpecular * glstate.light[i].specular.xyz;
+		ambient += glstate.light[i].ambient.xyz;
+	}
+	
+	color = tex2D(texSampler, texcoord).rgba;
+	color = float4((diffuse*color.rgb + specular * color.a + ambient).xyz, vertexData.w);
+}
+
+/*
+============================================================================================
+	Normal mapping Per pixel lighting fragment program (No Specular)
+============================================================================================
+*/  
+void PerPixelLight_normal_no_specular_fragment(float2 texcoord: TEXCOORD0,
+							float4 position: TEXCOORD5,
+							float4 vertexData: TEXCOORD6, //xyz components contain normalized MV pos, and w is MV distance
+							float3 normal: TEXCOORD7,	
+
+							float3 tangent: TEXCOORD3,
+							float3 binormal: TEXCOORD4,
+
+							sampler2D texSampler: TEXUNIT0,   
+							sampler2D normalMapSampler: TEXUNIT1,
+
+							out float4 color:COLOR)
+{	
+	//Normalize normal        
+	normal = normalize(normal);	
+
+	float3 diffuse = 0;
+	float tDiffuse = 0;
+	float3 ambient = float3(0.0f, 0.0f, 0.0f);
+
+	//tangent = normalize(tangent);
+	//binormal = normalize(binormal);
+
+	float3x3 TBNmatrix = float3x3(tangent, binormal, normal);
+
+	vertexData.xyz = -mul(TBNmatrix, vertexData.xyz);			
+
+	for(int i = 0; i<TOTAL_LIGHTS;i++)
+	{
+		pointLightForBumpSurfaces_no_specular(i, position.xyz, normalize(expand(tex2D(normalMapSampler, texcoord).xyz)),
+					   vertexData.xyz, TBNmatrix, normal, shadowMap[i], tDiffuse);
+		//spotLight(i, position, glstate.light[i].spot.direction, norm, 0.95, 0.5, view, tDiffuse, tSpecular);
+		diffuse += tDiffuse * glstate.light[i].diffuse.xyz;
+		ambient += glstate.light[i].ambient.xyz;
+	}
+	
+	color.rgb = tex2D(texSampler, texcoord).rgb;
+	color = float4((diffuse*color.rgb + ambient).xyz, vertexData.w);
+}
+
+/*
+============================================================================================
+	Normal mapping Per pixel lighting fragment program (Emissive)
+============================================================================================
+*/  
+void PerPixelLight_normal_emissive_fragment(float2 texcoord: TEXCOORD0,
+							float4 position: TEXCOORD5,
+							float4 vertexData: TEXCOORD6, //xyz components contain normalized MV pos, and w is MV distance
+							float3 normal: TEXCOORD7,	
+
+							float3 tangent: TEXCOORD3,
+							float3 binormal: TEXCOORD4,
+
+							sampler2D texSampler: TEXUNIT0,   
+							sampler2D normalMapSampler: TEXUNIT1,
+
+							out float4 color:COLOR)
+{	
+	//Normalize normal        
+	normal = normalize(normal);	
+
+	float3 diffuse = 0, specular = 0;
+	float tDiffuse = 0, tSpecular = 0;
+	float3 ambient = float3(0.0f, 0.0f, 0.0f);
+
+	//tangent = normalize(tangent);
+	//binormal = normalize(binormal);
+
+	float3x3 TBNmatrix = float3x3(tangent, binormal, normal);
+
+	vertexData.xyz = -mul(TBNmatrix, vertexData.xyz);			
+
+	for(int i = 0; i<TOTAL_LIGHTS;i++)
+	{
+		pointLightForBumpSurfaces(i, position.xyz, normalize(expand(tex2D(normalMapSampler, texcoord).xyz)),
+					   vertexData.xyz, TBNmatrix, normal, shadowMap[i], tDiffuse, tSpecular);
+		//spotLight(i, position, glstate.light[i].spot.direction, norm, 0.95, 0.5, view, tDiffuse, tSpecular);
+		diffuse += tDiffuse * glstate.light[i].diffuse.xyz;
+		specular += tSpecular * glstate.light[i].specular.xyz;
+		ambient += glstate.light[i].ambient.xyz;
+	}
+	
+	color = tex2D(texSampler, texcoord).rgba;
+	color = float4((diffuse*color.rgb + color.rgb * color.a * emissiveScale + specular + ambient).xyz, vertexData.w);
+}
+
+/*
+============================================================================================
+	Normal mapping Per pixel lighting fragment program (Emissive, No Specular)
+============================================================================================
+*/  
+void PerPixelLight_normal_emissive_no_specular_fragment(float2 texcoord: TEXCOORD0,
+							float4 position: TEXCOORD5,
+							float4 vertexData: TEXCOORD6, //xyz components contain normalized MV pos, and w is MV distance
+							float3 normal: TEXCOORD7,	
+
+							float3 tangent: TEXCOORD3,
+							float3 binormal: TEXCOORD4,
+
+							sampler2D texSampler: TEXUNIT0,   
+							sampler2D normalMapSampler: TEXUNIT1,
+
+							out float4 color:COLOR)
+{	
+	//Normalize normal        
+	normal = normalize(normal);	
+
+	float3 diffuse = 0;
+	float tDiffuse = 0;
+	float3 ambient = float3(0.0f, 0.0f, 0.0f);
+
+	//tangent = normalize(tangent);
+	//binormal = normalize(binormal);
+
+	float3x3 TBNmatrix = float3x3(tangent, binormal, normal);
+
+	vertexData.xyz = -mul(TBNmatrix, vertexData.xyz);			
+
+	for(int i = 0; i<TOTAL_LIGHTS;i++)
+	{
+		pointLightForBumpSurfaces_no_specular(i, position.xyz, normalize(expand(tex2D(normalMapSampler, texcoord).xyz)),
+					   vertexData.xyz, TBNmatrix, normal, shadowMap[i], tDiffuse);
+		//spotLight(i, position, glstate.light[i].spot.direction, norm, 0.95, 0.5, view, tDiffuse, tSpecular);
+		diffuse += tDiffuse * glstate.light[i].diffuse.xyz;
+		ambient += glstate.light[i].ambient.xyz;
+	}
+	
+	color = tex2D(texSampler, texcoord).rgba;
+	color = float4((diffuse*color.rgb + color.rgb * color.a * emissiveScale + ambient).xyz, vertexData.w);
+}
+
+/*
+============================================================================================
+	Per pixel lighting fragment program
+============================================================================================
+*/  
+void PerPixelLight_parallax_fragment(float2 texcoord: TEXCOORD0,
+							float4 position: TEXCOORD5,
+							float4 vertexData: TEXCOORD6, //xyz components contain normalized MV pos, and w is MV distance
+							float3 normal: TEXCOORD7,	
+
+							float3 tangent: TEXCOORD3,
+							float3 binormal: TEXCOORD4,
+
+							sampler2D texSampler: TEXUNIT0,   
+							sampler2D normalMapSampler: TEXUNIT1,
+
+							out float4 color:COLOR)
+{	
+	//Normalize normal        
+	normal = normalize(normal);	
+
+	float3 diffuse = 0, specular = 0;
+	float tDiffuse = 0, tSpecular = 0;
+	float3 ambient = float3(0.0f, 0.0f, 0.0f);
+	
+	//tangent = normalize(tangent);
+	//binormal = normalize(binormal);
+
+	float3x3 TBNmatrix = float3x3(tangent, binormal, normal);
+
+	half fBumpScale = 0.05f;
+	vertexData.xyz = -mul(TBNmatrix, vertexData.xyz);
+
+	/*
+	float height = tex2D(heightMapSampler, texcoord).w * 0.05 - 0.02;
+	texcoord = texcoord + vertexData.xy * height;*/		
+
+	half fDepth = tex2D(normalMapSampler, texcoord).w;
+	float2 vHalfOffset = vertexData.xy * (fDepth) * fBumpScale * 0.25f;
+	
+	fDepth = (fDepth + tex2D(normalMapSampler, texcoord + vHalfOffset).w) * 0.25f;
+	vHalfOffset = vertexData.xy * (fDepth) * fBumpScale;		
+
+	fDepth = (fDepth + tex2D(normalMapSampler, texcoord + vHalfOffset).w) * 0.25f;
+	vHalfOffset = vertexData.xy * (fDepth) * fBumpScale;
+
+	fDepth = (fDepth + tex2D(normalMapSampler, texcoord + vHalfOffset).w) * 0.25f;
+	vHalfOffset = vertexData.xy * (fDepth) * fBumpScale;
+		
+	texcoord = texcoord + vHalfOffset;
+
+	for(int i = 0; i<TOTAL_LIGHTS;i++)
+	{
+		//pointLight(i, position.xyz, normal, -vertexData.xyz, pixelXY, tDiffuse, tSpecular);
+		
+		pointLightForBumpSurfaces(i, position.xyz, normalize(expand(tex2D(normalMapSampler, texcoord).xyz)),
+					   vertexData.xyz, TBNmatrix, normal, shadowMap[i], tDiffuse, tSpecular);
+
+		//spotLight(i, position, glstate.light[i].spot.direction, norm, 0.95, 0.5, view, tDiffuse, tSpecular);
+		diffuse += tDiffuse * glstate.light[i].diffuse.xyz;
+		specular += tSpecular * glstate.light[i].specular.xyz;
+		ambient += glstate.light[i].ambient.xyz;
+	}
+	
+	color = tex2D(texSampler, texcoord).rgba;
+	color = float4((diffuse*color.rgb + specular * color.a + ambient).xyz, vertexData.w);
+}
+
+/*
+============================================================================================
+	Per pixel lighting fragment program (No Specular)
+============================================================================================
+*/  
+void PerPixelLight_parallax_no_specular_fragment(float2 texcoord: TEXCOORD0,
+							float4 position: TEXCOORD5,
+							float4 vertexData: TEXCOORD6, //xyz components contain normalized MV pos, and w is MV distance
+							float3 normal: TEXCOORD7,	
+
+							float3 tangent: TEXCOORD3,
+							float3 binormal: TEXCOORD4,
+
+							sampler2D texSampler: TEXUNIT0,   
+							sampler2D normalMapSampler: TEXUNIT1,
+
+							out float4 color:COLOR)
+{	
+	//Normalize normal        
+	normal = normalize(normal);	
+
+	float3 diffuse = 0;
+	float tDiffuse = 0;
+	float3 ambient = float3(0.0f, 0.0f, 0.0f);
+	
+	//tangent = normalize(tangent);
+	//binormal = normalize(binormal);
+
+	float3x3 TBNmatrix = float3x3(tangent, binormal, normal);
+
+	half fBumpScale = 0.05f;
+	vertexData.xyz = -mul(TBNmatrix, vertexData.xyz);
+
+	/*
+	float height = tex2D(heightMapSampler, texcoord).w * 0.05 - 0.02;
+	texcoord = texcoord + vertexData.xy * height;*/		
+
+	half fDepth = tex2D(normalMapSampler, texcoord).w;
+	float2 vHalfOffset = vertexData.xy * (fDepth) * fBumpScale * 0.25f;
+	
+	fDepth = (fDepth + tex2D(normalMapSampler, texcoord + vHalfOffset).w) * 0.25f;
+	vHalfOffset = vertexData.xy * (fDepth) * fBumpScale;		
+
+	fDepth = (fDepth + tex2D(normalMapSampler, texcoord + vHalfOffset).w) * 0.25f;
+	vHalfOffset = vertexData.xy * (fDepth) * fBumpScale;
+
+	fDepth = (fDepth + tex2D(normalMapSampler, texcoord + vHalfOffset).w) * 0.25f;
+	vHalfOffset = vertexData.xy * (fDepth) * fBumpScale;
+		
+	texcoord = texcoord + vHalfOffset;
+
+	for(int i = 0; i<TOTAL_LIGHTS;i++)
+	{
+		//pointLight(i, position.xyz, normal, -vertexData.xyz, pixelXY, tDiffuse, tSpecular);
+		
+		pointLightForBumpSurfaces_no_specular(i, position.xyz, normalize(expand(tex2D(normalMapSampler, texcoord).xyz)),
+					   vertexData.xyz, TBNmatrix, normal, shadowMap[i], tDiffuse);
+
+		//spotLight(i, position, glstate.light[i].spot.direction, norm, 0.95, 0.5, view, tDiffuse, tSpecular);
+		diffuse += tDiffuse * glstate.light[i].diffuse.xyz;
+		ambient += glstate.light[i].ambient.xyz;
+	}
+	
+	color.rgb = tex2D(texSampler, texcoord).rgb;
+	color = float4((diffuse*color.rgb + ambient).xyz, vertexData.w);
+}
+
+/*
+============================================================================================
+	Per pixel lighting fragment program (Emissive)
+============================================================================================
+*/  
+void PerPixelLight_parallax_emissive_fragment(float2 texcoord: TEXCOORD0,
+							float4 position: TEXCOORD5,
+							float4 vertexData: TEXCOORD6, //xyz components contain normalized MV pos, and w is MV distance
+							float3 normal: TEXCOORD7,	
+
+							float3 tangent: TEXCOORD3,
+							float3 binormal: TEXCOORD4,
+
+							sampler2D texSampler: TEXUNIT0,   
+							sampler2D normalMapSampler: TEXUNIT1,
+
+							out float4 color:COLOR)
+{	
+	//Normalize normal        
+	normal = normalize(normal);	
+
+	float3 diffuse = 0, specular = 0;
+	float tDiffuse = 0, tSpecular = 0;
+	float3 ambient = float3(0.0f, 0.0f, 0.0f);
+	
+	//tangent = normalize(tangent);
+	//binormal = normalize(binormal);
+
+	float3x3 TBNmatrix = float3x3(tangent, binormal, normal);
+
+	half fBumpScale = 0.05f;
+	vertexData.xyz = -mul(TBNmatrix, vertexData.xyz);
+
+	/*
+	float height = tex2D(heightMapSampler, texcoord).w * 0.05 - 0.02;
+	texcoord = texcoord + vertexData.xy * height;*/		
+
+	half fDepth = tex2D(normalMapSampler, texcoord).w;
+	float2 vHalfOffset = vertexData.xy * (fDepth) * fBumpScale * 0.25f;
+	
+	fDepth = (fDepth + tex2D(normalMapSampler, texcoord + vHalfOffset).w) * 0.25f;
+	vHalfOffset = vertexData.xy * (fDepth) * fBumpScale;		
+
+	fDepth = (fDepth + tex2D(normalMapSampler, texcoord + vHalfOffset).w) * 0.25f;
+	vHalfOffset = vertexData.xy * (fDepth) * fBumpScale;
+
+	fDepth = (fDepth + tex2D(normalMapSampler, texcoord + vHalfOffset).w) * 0.25f;
+	vHalfOffset = vertexData.xy * (fDepth) * fBumpScale;
+		
+	texcoord = texcoord + vHalfOffset;
+
+	for(int i = 0; i<TOTAL_LIGHTS;i++)
+	{
+		//pointLight(i, position.xyz, normal, -vertexData.xyz, pixelXY, tDiffuse, tSpecular);
+		
+		pointLightForBumpSurfaces(i, position.xyz, normalize(expand(tex2D(normalMapSampler, texcoord).xyz)),
+					   vertexData.xyz, TBNmatrix, normal, shadowMap[i], tDiffuse, tSpecular);
+
+		//spotLight(i, position, glstate.light[i].spot.direction, norm, 0.95, 0.5, view, tDiffuse, tSpecular);
+		diffuse += tDiffuse * glstate.light[i].diffuse.xyz;
+		specular += tSpecular * glstate.light[i].specular.xyz;
+		ambient += glstate.light[i].ambient.xyz;
+	}
+	
+	color = tex2D(texSampler, texcoord).rgba;
+	color = float4((diffuse*color.rgb + color.rgb * color.a * emissiveScale + specular + ambient).xyz, vertexData.w);
+}
+
+/*
+============================================================================================
+	Per pixel lighting fragment program (Emissive, No Specular)
+============================================================================================
+*/  
+void PerPixelLight_parallax_emissive_no_specular_fragment(float2 texcoord: TEXCOORD0,
+							float4 position: TEXCOORD5,
+							float4 vertexData: TEXCOORD6, //xyz components contain normalized MV pos, and w is MV distance
+							float3 normal: TEXCOORD7,	
+
+							float3 tangent: TEXCOORD3,
+							float3 binormal: TEXCOORD4,
+
+							sampler2D texSampler: TEXUNIT0,   
+							sampler2D normalMapSampler: TEXUNIT1,
+
+							out float4 color:COLOR)
+{	
+	//Normalize normal        
+	normal = normalize(normal);	
+
+	float3 diffuse = 0;
+	float tDiffuse = 0;
+	float3 ambient = float3(0.0f, 0.0f, 0.0f);
+	
+	//tangent = normalize(tangent);
+	//binormal = normalize(binormal);
+
+	float3x3 TBNmatrix = float3x3(tangent, binormal, normal);
+
+	half fBumpScale = 0.05f;
+	vertexData.xyz = -mul(TBNmatrix, vertexData.xyz);
+
+	/*
+	float height = tex2D(heightMapSampler, texcoord).w * 0.05 - 0.02;
+	texcoord = texcoord + vertexData.xy * height;*/		
+
+	half fDepth = tex2D(normalMapSampler, texcoord).w;
+	float2 vHalfOffset = vertexData.xy * (fDepth) * fBumpScale * 0.25f;
+	
+	fDepth = (fDepth + tex2D(normalMapSampler, texcoord + vHalfOffset).w) * 0.25f;
+	vHalfOffset = vertexData.xy * (fDepth) * fBumpScale;		
+
+	fDepth = (fDepth + tex2D(normalMapSampler, texcoord + vHalfOffset).w) * 0.25f;
+	vHalfOffset = vertexData.xy * (fDepth) * fBumpScale;
+
+	fDepth = (fDepth + tex2D(normalMapSampler, texcoord + vHalfOffset).w) * 0.25f;
+	vHalfOffset = vertexData.xy * (fDepth) * fBumpScale;
+		
+	texcoord = texcoord + vHalfOffset;
+
+	for(int i = 0; i<TOTAL_LIGHTS;i++)
+	{
+		//pointLight(i, position.xyz, normal, -vertexData.xyz, pixelXY, tDiffuse, tSpecular);
+		
+		pointLightForBumpSurfaces_no_specular(i, position.xyz, normalize(expand(tex2D(normalMapSampler, texcoord).xyz)),
+					   vertexData.xyz, TBNmatrix, normal, shadowMap[i], tDiffuse);
+
+		//spotLight(i, position, glstate.light[i].spot.direction, norm, 0.95, 0.5, view, tDiffuse, tSpecular);
+		diffuse += tDiffuse * glstate.light[i].diffuse.xyz;
+		ambient += glstate.light[i].ambient.xyz;
+	}
+	
+	color = tex2D(texSampler, texcoord).rgba;
+	color = float4((diffuse*color.rgb + color.rgb * color.a * emissiveScale + ambient).xyz, vertexData.w);
+}
+
+/*
+============================================================================================
+	Per pixel lighting technique
+============================================================================================
+*/  
+technique PerPixelLighting
+{
+	/*
+	============================================================================================
+		Default Per pixel lighting (takes RGBA in TEXUNIT0) A is specular map/gloss map
+	============================================================================================
+	*/
+	pass ppl_DG
+    {        
+		
+        CullFaceEnable = true;
+        CullFace = Back;
+        VertexProgram = compile VERTEX_PROFILE PerPixelLight_default_vertex();
+        FragmentProgram = compile FRAGMENT_PROFILE PerPixelLight_default_fragment();
+    }
+
+	/*
+	============================================================================================
+		Default Per pixel lighting (takes RGB in TEXUNIT0) => RGB is diffuse
+	============================================================================================
+	*/
+	pass ppl_D
+    {        
+		
+        CullFaceEnable = true;
+        CullFace = Back;
+        VertexProgram = compile VERTEX_PROFILE PerPixelLight_default_vertex();
+        FragmentProgram = compile FRAGMENT_PROFILE PerPixelLight_default_no_specular_fragment();
+    }
+
+	/*
+	============================================================================================
+		Default Per pixel lighting (takes RGBA in TEXUNIT0) => RGB is diffuse, A is emissive
+		+ calculates specular contribution
+	============================================================================================
+	*/
+	pass ppl_DES
+    {        
+		
+        CullFaceEnable = true;
+        CullFace = Back;
+        VertexProgram = compile VERTEX_PROFILE PerPixelLight_default_vertex();
+        FragmentProgram = compile FRAGMENT_PROFILE PerPixelLight_default_emissive_fragment();
+    }
+
+	/*
+	============================================================================================
+		Default Per pixel lighting (takes RGBA in TEXUNIT0) => RGB is diffuse, A is emissive		
+	============================================================================================
+	*/
+	pass ppl_DE
+    {        
+		
+        CullFaceEnable = true;
+        CullFace = Back;
+        VertexProgram = compile VERTEX_PROFILE PerPixelLight_default_vertex();
+        FragmentProgram = compile FRAGMENT_PROFILE PerPixelLight_default_emissive_no_specular_fragment();
+    }
+
+	/*
+	============================================================================================
+		Normal mapping Per pixel lighting (takes RGBA in TEXUNIT0) A is specular map/gloss map
+										  (takes RGB in TEXUNIT1) RGB is normal map
+	============================================================================================
+	*/
+	pass ppl_DGN
+    {        		
+        CullFaceEnable = true;
+        CullFace = Back;
+        VertexProgram = compile VERTEX_PROFILE PerPixelLight_normal_parallax_vertex();
+        FragmentProgram = compile FRAGMENT_PROFILE PerPixelLight_normal_fragment();
+    }
+
+	
+	/*
+	============================================================================================
+		Normal mapping Per pixel lighting (takes RGB in TEXUNIT0) RGB is diffuse
+										  (takes RGB in TEXUNIT1) RGB is normal map
+	============================================================================================
+	*/
+	pass ppl_DN
+    {        		
+        CullFaceEnable = true;
+        CullFace = Back;
+        VertexProgram = compile VERTEX_PROFILE PerPixelLight_normal_parallax_vertex();
+        FragmentProgram = compile FRAGMENT_PROFILE PerPixelLight_normal_no_specular_fragment();
+    }
+
+	/*
+	============================================================================================
+		Normal mapping Per pixel lighting (takes RGBA in TEXUNIT0) RGB is diffuse, A is emissive
+										  (takes RGB in TEXUNIT1) RGB is normal map
+											+ calculates specular contribution
+	============================================================================================
+	*/
+	pass ppl_DENS
+    {        		
+        CullFaceEnable = true;
+        CullFace = Back;
+        VertexProgram = compile VERTEX_PROFILE PerPixelLight_normal_parallax_vertex();
+        FragmentProgram = compile FRAGMENT_PROFILE PerPixelLight_normal_emissive_fragment();
+    }
+
+	/*
+	============================================================================================
+		Normal mapping Per pixel lighting (takes RGBA in TEXUNIT0) RGB is diffuse, A is emissive
+										  (takes RGB in TEXUNIT1) RGB is normal map
+	============================================================================================
+	*/
+	pass ppl_DEN
+    {        		
+        CullFaceEnable = true;
+        CullFace = Back;
+        VertexProgram = compile VERTEX_PROFILE PerPixelLight_normal_parallax_vertex();
+        FragmentProgram = compile FRAGMENT_PROFILE PerPixelLight_normal_emissive_no_specular_fragment();
+    }
+
+	/*
+	============================================================================================
+		Parallax mapping Per pixel lighting (takes RGBA in TEXUNIT0) A is specular map/gloss map
+										  (takes RGBA in TEXUNIT1) RGB is normal map,
+																   A is heightmap
+	============================================================================================
+	*/
+	pass ppl_DGNP
+    {        		
+        CullFaceEnable = true;
+        CullFace = Back;
+        VertexProgram = compile VERTEX_PROFILE PerPixelLight_normal_parallax_vertex();
+        FragmentProgram = compile FRAGMENT_PROFILE PerPixelLight_parallax_fragment();
+    }
+
+	/*
+	============================================================================================
+		Parallax mapping Per pixel lighting (takes RGB in TEXUNIT0) 
+										  (takes RGBA in TEXUNIT1) RGB is normal map,
+																   A is heightmap
+	============================================================================================
+	*/
+	pass ppl_DNP
+    {        		
+        CullFaceEnable = true;
+        CullFace = Back;
+        VertexProgram = compile VERTEX_PROFILE PerPixelLight_normal_parallax_vertex();
+        FragmentProgram = compile FRAGMENT_PROFILE PerPixelLight_parallax_no_specular_fragment();
+    }
+
+	/*
+	============================================================================================
+		Parallax mapping Per pixel lighting (takes RGBA in TEXUNIT0) A is emissive
+										  (takes RGBA in TEXUNIT1) RGB is normal map,
+																   A is heightmap
+										   + calculates specular contribution
+	============================================================================================
+	*/
+	pass ppl_DENPS
+    {        		
+        CullFaceEnable = true;
+        CullFace = Back;
+        VertexProgram = compile VERTEX_PROFILE PerPixelLight_normal_parallax_vertex();
+        FragmentProgram = compile FRAGMENT_PROFILE PerPixelLight_parallax_emissive_fragment();
+    }
+	/*
+	============================================================================================
+		Parallax mapping Per pixel lighting (takes RGBA in TEXUNIT0) A is emissive
+										  (takes RGBA in TEXUNIT1) RGB is normal map,
+																   A is heightmap
+	============================================================================================
+	*/
+	pass ppl_DENP
+    {        		
+        CullFaceEnable = true;
+        CullFace = Back;
+        VertexProgram = compile VERTEX_PROFILE PerPixelLight_normal_parallax_vertex();
+        FragmentProgram = compile FRAGMENT_PROFILE PerPixelLight_parallax_emissive_no_specular_fragment();
+    }
+}

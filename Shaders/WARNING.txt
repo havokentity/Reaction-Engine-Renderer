@@ -1,0 +1,2 @@
+Don't use perpixelLightingSSAO.cgfx or any of the SSAO extension shaders
+in any demo, I haven't added SSAO to all the materials in those shaders yet

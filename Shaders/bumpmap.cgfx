@@ -1,0 +1,122 @@
+/*	
+	Bumpmap effect
+*/
+#define LIGHTS_ONE
+#define LIGHTS_TWO
+
+uniform samplerCUBE normalizationMap;
+
+struct SDATA
+{
+    float4 oPos: POSITION;
+    float2 oTexcoord:TEXCOORD0;
+    
+    float3 halfVecs:TEXCOORD4;
+    
+    #ifdef LIGHTS_ONE
+        float3 lightDir0:TEXCOORD5;
+          
+    #endif
+    
+    #ifdef LIGHTS_TWO
+        float3 lightDir1:TEXCOORD6;    
+    #endif
+};
+         
+float attenuate(float dis, int light)
+{
+	//float attenuation = 1/(0.001f + 0.003f*dis + 0.0004*dis*dis);
+	float attenuation = 1/(glstate.light[light].attenuation.x + glstate.light[light].attenuation.y*dis + glstate.light[light].attenuation.z*dis*dis);
+	return attenuation;
+}
+
+float3 expand(float3 v)
+{
+    return (v - 0.5f)*2;
+}
+
+SDATA BumpVertex(float4 position: POSITION,
+                float2 texcoord: TEXCOORD0 )
+{
+    SDATA outData;
+    
+    outData.oTexcoord = texcoord;
+    outData.oPos = mul(glstate.matrix.mvp, position);
+    
+    outData.halfVecs =  normalize(-position.xyz); 
+    //outData.halfVecs =  (-position.xyz); 
+    
+    #ifdef LIGHTS_ONE            
+        outData.lightDir0 = mul(glstate.matrix.inverse.modelview[0], glstate.light[0].position).xyz - position.xyz;                 
+    #endif
+    
+    #ifdef LIGHTS_TWO            
+        outData.lightDir1 = mul(glstate.matrix.inverse.modelview[0], glstate.light[1].position).xyz - position.xyz;       
+    #endif
+    
+    return outData;
+}
+
+void BumpFragment(SDATA inData, 
+                  float2 texcoord: TEXCOORD0,
+
+                  sampler2D surfaceTexture: TEXUNIT0,
+                  sampler2D normalTexture: TEXUNIT1,
+
+                  out float4 color: COLOR)
+{
+    //inData.halfVecs = texCUBE(normalizationMap, inData.halfVecs).xyz;
+    //inData.halfVecs = expand(inData.halfVecs);
+    //inData.lightDir0 = texCUBE(normalizationMap, inData.lightDir0).xyz;    
+    //inData.lightDir0 = expand(inData.lightDir0);
+    color = float4(0, 0, 0, 1);
+    
+    float3 normal =tex2D(normalTexture, texcoord).xyz;
+    //normal = texCUBE(normalizationMap, normal).xyz;
+    normal = expand(normal);  
+        
+    float diffuse, specular, dis, attenuation;
+    float specularComponent = max(dot(normal, inData.halfVecs), 0);
+    float4 texLookUp = tex2D(surfaceTexture, texcoord);      
+    
+    #ifdef LIGHTS_ONE
+        dis = length(inData.lightDir0);
+        //inData.lightDir0 = texCUBE(normalizationMap, inData.lightDir0).xyz;    
+        //inData.lightDir0 = expand(inData.lightDir0);
+        inData.lightDir0 /= dis;
+        attenuation = attenuate(dis, 0);  
+        
+        diffuse = inData.lightDir0.z > 0?max(dot(normal, inData.lightDir0), 0) * attenuation:0;
+        specular = (diffuse>0)?pow(specularComponent, glstate.light[0].specular.w) * attenuation:0;
+        
+        color += glstate.light[0].ambient +
+                 glstate.light[0].diffuse * texLookUp * diffuse +
+                 specular * float4(glstate.light[0].specular.xyz, 1);
+    #endif
+    
+    #ifdef LIGHTS_TWO
+        dis = length(inData.lightDir1);
+        inData.lightDir1 /= dis;
+        attenuation = attenuate(dis, 1);  
+        
+        diffuse = inData.lightDir1.z > 0?max(dot(normal, inData.lightDir1), 0) * attenuation:0;
+        specular = (diffuse>0)?specularComponent * attenuation:0;
+        
+        color += glstate.light[1].ambient +
+                 glstate.light[1].diffuse * texLookUp * diffuse +
+                 specular * glstate.light[1].specular;
+    #endif
+
+	color.w = 50;
+    
+}
+
+technique BumpmapDefault
+{
+    pass pass0
+    {
+       CullFace = Front;
+       VertexProgram = compile vp40 BumpVertex(); 
+       FragmentProgram = compile fp40 BumpFragment();
+    }
+}
